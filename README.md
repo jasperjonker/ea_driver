@@ -56,7 +56,7 @@ psu.close()
 ```python
 from ea_driver import EAEL9080_60DT
 
-load = EAEL9080_60DT.modbus_rtu("/dev/ttyUSB0", baudrate=115200)
+load = EAEL9080_60DT.modbus_rtu("/dev/ttyUSB0", baudrate=115200, unit_id=0)
 load.open()
 load.set_remote(True)
 load.set_current(20.0)
@@ -65,6 +65,9 @@ print(load.read_measurements())
 print(load.read_status())
 load.close()
 ```
+
+For devices left in the default "Limited" Modbus compliance mode, use RTU slave address `0`.
+If you switch the device to "Full" Modbus compliance, slave address `1` is also supported.
 
 ## Build
 

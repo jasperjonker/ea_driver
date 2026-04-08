@@ -125,6 +125,20 @@ class EASCPIBase(SCPIDevice):
         )
 
 
+class EAELSCPIBase(EASCPIBase):
+    def set_input_enabled(self, enabled: bool) -> None:
+        self.write(f"INP {'ON' if enabled else 'OFF'}")
+
+    def set_output_enabled(self, enabled: bool) -> None:
+        self.set_input_enabled(enabled)
+
+    def is_input_enabled(self) -> bool:
+        return self.query("INP?").strip().upper() == "ON"
+
+    def is_output_enabled(self) -> bool:
+        return self.is_input_enabled()
+
+
 class EAModbusBase:
     REG_NOMINAL_VOLTAGE = 121
     REG_NOMINAL_CURRENT = 123
@@ -160,10 +174,10 @@ class EAModbusBase:
         return DeviceRatings(voltage_v=voltage, current_a=current, power_w=power)
 
     def set_remote(self, enabled: bool) -> None:
-        self.client.write_single_register(self.REG_REMOTE, 0xFF00 if enabled else 0x0000)
+        self.client.write_single_coil(self.REG_REMOTE, enabled)
 
     def set_input_enabled(self, enabled: bool) -> None:
-        self.client.write_single_register(self.REG_DC_STATE, 0xFF00 if enabled else 0x0000)
+        self.client.write_single_coil(self.REG_DC_STATE, enabled)
 
     def set_output_enabled(self, enabled: bool) -> None:
         self.set_input_enabled(enabled)
@@ -208,11 +222,25 @@ class EAModbusBase:
         return decode_ea_device_state(value)
 
     def read_protection_thresholds(self) -> Measurement:
-        regs = self.client.read_holding_registers(self.REG_OVP, 7)
         return Measurement(
-            voltage_v=_raw_to_value(regs[0], self.ratings.voltage_v, 1.10, EA_PROTECTION_FULL_SCALE),
-            current_a=_raw_to_value(regs[3], self.ratings.current_a, 1.10, EA_PROTECTION_FULL_SCALE),
-            power_w=_raw_to_value(regs[6], self.ratings.power_w, 1.10, EA_PROTECTION_FULL_SCALE),
+            voltage_v=_raw_to_value(
+                self.client.read_holding_registers(self.REG_OVP, 1)[0],
+                self.ratings.voltage_v,
+                1.10,
+                EA_PROTECTION_FULL_SCALE,
+            ),
+            current_a=_raw_to_value(
+                self.client.read_holding_registers(self.REG_OCP, 1)[0],
+                self.ratings.current_a,
+                1.10,
+                EA_PROTECTION_FULL_SCALE,
+            ),
+            power_w=_raw_to_value(
+                self.client.read_holding_registers(self.REG_OPP, 1)[0],
+                self.ratings.power_w,
+                1.10,
+                EA_PROTECTION_FULL_SCALE,
+            ),
         )
 
 
@@ -237,7 +265,7 @@ class EAPSB10060_60:
         port: str,
         *,
         baudrate: int = 115200,
-        unit_id: int = 1,
+        unit_id: int = 0,
         timeout: float = 0.5,
     ) -> EAModbusBase:
         return EAModbusBase(ModbusRTUClient(port=port, baudrate=baudrate, unit_id=unit_id, timeout=timeout), cls.RATINGS)
@@ -253,12 +281,12 @@ class EAEL9080_60DT:
     )
 
     @classmethod
-    def scpi_tcp(cls, host: str, *, port: int = 5025, timeout: float = 2.0) -> EASCPIBase:
-        return EASCPIBase(SocketSCPITransport(host=host, port=port, timeout=timeout), cls.RATINGS)
+    def scpi_tcp(cls, host: str, *, port: int = 5025, timeout: float = 2.0) -> EAELSCPIBase:
+        return EAELSCPIBase(SocketSCPITransport(host=host, port=port, timeout=timeout), cls.RATINGS)
 
     @classmethod
-    def scpi_serial(cls, port: str, *, baudrate: int = 115200, timeout: float = 1.0) -> EASCPIBase:
-        return EASCPIBase(SerialSCPITransport(port=port, baudrate=baudrate, timeout=timeout), cls.RATINGS)
+    def scpi_serial(cls, port: str, *, baudrate: int = 115200, timeout: float = 1.0) -> EAELSCPIBase:
+        return EAELSCPIBase(SerialSCPITransport(port=port, baudrate=baudrate, timeout=timeout), cls.RATINGS)
 
     @classmethod
     def modbus_tcp(cls, host: str, *, port: int = 502, unit_id: int = 1, timeout: float = 2.0) -> EAModbusBase:
@@ -270,7 +298,7 @@ class EAEL9080_60DT:
         port: str,
         *,
         baudrate: int = 115200,
-        unit_id: int = 1,
+        unit_id: int = 0,
         timeout: float = 0.5,
     ) -> EAModbusBase:
         return EAModbusBase(ModbusRTUClient(port=port, baudrate=baudrate, unit_id=unit_id, timeout=timeout), cls.RATINGS)

@@ -66,6 +66,9 @@ class ModbusTCPClient:
     def write_single_register(self, address: int, value: int) -> None:
         self._request(0x06, struct.pack(">HH", address, value))
 
+    def write_single_coil(self, address: int, enabled: bool) -> None:
+        self._request(0x05, struct.pack(">HH", address, 0xFF00 if enabled else 0x0000))
+
     def _request(self, function_code: int, payload: bytes) -> bytes:
         self._ensure_open()
         self._transaction_id = (self._transaction_id + 1) & 0xFFFF
@@ -124,6 +127,9 @@ class ModbusRTUClient:
 
     def write_single_register(self, address: int, value: int) -> None:
         self._request(0x06, struct.pack(">HH", address, value), expected_min=8)
+
+    def write_single_coil(self, address: int, enabled: bool) -> None:
+        self._request(0x05, struct.pack(">HH", address, 0xFF00 if enabled else 0x0000), expected_min=8)
 
     def _request(self, function_code: int, payload: bytes, expected_min: int) -> bytes:
         self._ensure_open()
