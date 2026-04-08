@@ -1,4 +1,4 @@
-# ea_driver
+# Elektro-Automatik Python Driver
 
 `ea_driver` is a standalone Python package for EA Elektro-Automatik instruments.
 
