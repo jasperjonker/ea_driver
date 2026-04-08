@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ea_driver"
+dynamic = ["version"]
+description = "Python drivers for EA Elektro-Automatik lab equipment over SCPI and Modbus."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Jasper" }]
+keywords = ["ea", "scpi", "modbus", "power-supply", "electronic-load", "lab"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.optional-dependencies]
+serial = ["pyserial>=3.5"]
+dev = ["pytest>=8.0", "build>=1.2", "hatch>=1.14"]
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.1.0.dev0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/ea_driver/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ea_driver"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/README.md",
+  "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
