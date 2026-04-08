@@ -256,7 +256,7 @@ class EAPSB10060_60:
         return EASCPIBase(SerialSCPITransport(port=port, baudrate=baudrate, timeout=timeout), cls.RATINGS)
 
     @classmethod
-    def modbus_tcp(cls, host: str, *, port: int = 502, unit_id: int = 1, timeout: float = 2.0) -> EAModbusBase:
+    def modbus_tcp(cls, host: str, *, port: int = 502, unit_id: int = 0, timeout: float = 2.0) -> EAModbusBase:
         return EAModbusBase(ModbusTCPClient(host=host, port=port, unit_id=unit_id, timeout=timeout), cls.RATINGS)
 
     @classmethod
@@ -289,8 +289,8 @@ class EAEL9080_60DT:
         return EAELSCPIBase(SerialSCPITransport(port=port, baudrate=baudrate, timeout=timeout), cls.RATINGS)
 
     @classmethod
-    def modbus_tcp(cls, host: str, *, port: int = 502, unit_id: int = 1, timeout: float = 2.0) -> EAModbusBase:
-        return EAModbusBase(ModbusTCPClient(host=host, port=port, unit_id=unit_id, timeout=timeout), cls.RATINGS)
+    def modbus_tcp(cls, host: str, *, port: int = 502, unit_id: int = 0, timeout: float = 2.0) -> EAModbusBase:
+        raise NotImplementedError("EA-EL 9000 DT/T does not support Modbus TCP; use SCPI over TCP or Modbus RTU")
 
     @classmethod
     def modbus_rtu(

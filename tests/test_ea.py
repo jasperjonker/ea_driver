@@ -1,3 +1,5 @@
+import pytest
+
 from ea_driver.ea import (
     EA_MEASURE_FULL_SCALE,
     EA_PROTECTION_FULL_SCALE,
@@ -142,3 +144,13 @@ def test_modbus_boolean_controls_use_coil_writes():
 def test_el_modbus_rtu_defaults_to_unit_id_zero():
     device = EAEL9080_60DT.modbus_rtu("/dev/ttyACM0")
     assert device.client.unit_id == 0
+
+
+def test_psb_modbus_tcp_defaults_to_unit_id_zero():
+    device = EAPSB10060_60.modbus_tcp("192.168.0.42")
+    assert device.client.unit_id == 0
+
+
+def test_el_modbus_tcp_is_not_supported():
+    with pytest.raises(NotImplementedError):
+        EAEL9080_60DT.modbus_tcp("192.168.0.42")

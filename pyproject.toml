@@ -23,6 +23,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.scripts]
+ea-driver-verify = "ea_driver.verify:main"
+
 [project.optional-dependencies]
 serial = ["pyserial>=3.5"]
 dev = ["pytest>=8.0", "build>=1.2", "hatch>=1.14"]

@@ -13,7 +13,7 @@ The package bundles the two EA models because they share the same transport mode
 
 - SCPI over LAN TCP sockets
 - SCPI over USB serial / virtual COM
-- Modbus TCP over LAN
+- Modbus TCP over LAN on supported models
 - Modbus RTU over USB serial / virtual COM
 - Remote lock handling
 - DC input/output enable control
@@ -23,6 +23,20 @@ The package bundles the two EA models because they share the same transport mode
 - Protection threshold readback
 
 ## Install
+
+With `uv`:
+
+```bash
+uv sync
+```
+
+With USB serial support:
+
+```bash
+uv sync --extra serial
+```
+
+Or with `pip`:
 
 ```bash
 pip install -e .
@@ -68,6 +82,96 @@ load.close()
 
 For devices left in the default "Limited" Modbus compliance mode, use RTU slave address `0`.
 If you switch the device to "Full" Modbus compliance, slave address `1` is also supported.
+For Modbus TCP, use unit identifier `0`. The library now defaults to `0` for supported Modbus TCP models.
+For `EA-EL 9000 DT / T`, Modbus TCP is not supported by the device series; use SCPI over LAN or Modbus RTU instead.
+
+### LAN Notes
+
+SCPI over LAN uses a normal TCP socket on port `5025`.
+Modbus TCP uses port `502`.
+
+Be aware that EA devices can close idle TCP socket connections after a timeout. If your application keeps a
+connection open for long gaps between commands, either reopen the connection before the next operation or set
+the device's TCP timeout / keep-alive settings appropriately on the instrument.
+
+### EL over USB Modbus RTU with Terminal Logging, Kelvin Sense, 1 A CC
+
+Enable remote sensing / Kelvin mode on the instrument first. The example below verifies that the
+device reports `remote_sensing=True` before it enables the load.
+
+```python
+import logging
+import time
+
+from ea_driver import EAEL9080_60DT
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+log = logging.getLogger("ea_driver.example")
+
+port = "/dev/serial/by-id/usb-EA_Elektro-Automatik_GmbH___Co._KG_EL_9080-60_DT_2228100002-if00"
+load = EAEL9080_60DT.modbus_rtu(port, baudrate=115200, unit_id=0)
+
+load.open()
+try:
+    status = load.read_status()
+    log.info("Initial status: %s", status)
+    if not status.remote_sensing:
+        raise RuntimeError("Kelvin / remote sensing is not active on the load")
+
+    load.set_remote(True)
+    time.sleep(0.3)
+
+    load.set_current(1.0)
+    time.sleep(0.1)
+    load.set_input_enabled(True)
+    time.sleep(0.5)
+
+    status = load.read_status()
+    measurement = load.read_measurements()
+    log.info("Under load status: %s", status)
+    log.info(
+        "Under load measurement: %.3f V, %.3f A, %.3f W",
+        measurement.voltage_v,
+        measurement.current_a,
+        measurement.power_w,
+    )
+
+    if status.regulation_mode != "CC":
+        raise RuntimeError(f"Expected CC mode, got {status.regulation_mode}")
+finally:
+    try:
+        load.set_input_enabled(False)
+    finally:
+        try:
+            load.set_remote(False)
+        finally:
+            load.close()
+```
+
+### Verification CLI
+
+The packaged verifier uses Python `logging` and can log directly to the terminal:
+
+```bash
+uv sync --extra serial
+uv run ea-driver-verify \
+  --port /dev/serial/by-id/usb-EA_Elektro-Automatik_GmbH___Co._KG_EL_9080-60_DT_2228100002-if00 \
+  --exercise-modbus \
+  --exercise-current-a 1.0 \
+  --exercise-duration-s 2 \
+  --require-remote-sensing \
+  --log-level INFO
+```
+
+You can also run it as a module:
+
+```bash
+uv sync --extra serial
+uv run python -m ea_driver.verify --help
+```
 
 ## Build
 
