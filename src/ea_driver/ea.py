@@ -161,6 +161,13 @@ class EAModbusBase:
         self.client = client
         self.ratings = ratings
 
+    def __enter__(self) -> "EAModbusBase":
+        self.open()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+
     def open(self) -> None:
         self.client.open()
 
@@ -245,7 +252,7 @@ class EAModbusBase:
 
 
 class EAPSB10060_60:
-    RATINGS = DeviceRatings(voltage_v=60.0, current_a=1000.0, power_w=30000.0)
+    RATINGS = DeviceRatings(voltage_v=60.0, current_a=60.0, power_w=1500.0)
 
     @classmethod
     def scpi_tcp(cls, host: str, *, port: int = 5025, timeout: float = 2.0) -> EASCPIBase:

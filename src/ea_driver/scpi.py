@@ -107,6 +107,13 @@ class SCPIDevice:
     def __init__(self, transport: SCPITransport) -> None:
         self.transport = transport
 
+    def __enter__(self) -> "SCPIDevice":
+        self.open()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+
     def open(self) -> None:
         self.transport.open()
 
@@ -124,3 +131,15 @@ class SCPIDevice:
 
     def clear_status(self) -> None:
         self.write("*CLS")
+
+    def next_error(self) -> str:
+        return self.query("SYST:ERR?")
+
+    def read_errors(self, *, max_errors: int = 5) -> list[str]:
+        errors: list[str] = []
+        for _ in range(max_errors):
+            error = self.next_error()
+            errors.append(error)
+            if error.startswith("0,"):
+                break
+        return errors

@@ -4,18 +4,53 @@ import argparse
 import glob
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from ea_driver import EAEL9080_60DT
-from ea_driver.core import Measurement
+from ea_driver import EAEL9080_60DT, EAPSB10060_60
+from ea_driver.core import InstrumentError, Measurement
 from ea_driver.ea import EAStatus
+from ea_driver.scpi import SCPIDevice, SerialSCPITransport
 
 REMOTE_SETTLE_S = 0.3
 VALUE_SETTLE_S = 0.1
-INPUT_SETTLE_S = 0.5
+OUTPUT_SETTLE_S = 0.5
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
 logger = logging.getLogger("ea_driver.verify")
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceSpec:
+    key: str
+    label: str
+    idn_substring: str
+    device_cls: type[Any]
+
+
+SUPPORTED_DEVICES = (
+    DeviceSpec(
+        key="auto",
+        label="Auto detect",
+        idn_substring="",
+        device_cls=object,
+    ),
+    DeviceSpec(
+        key="el9080-60-dt",
+        label="EA-EL 9080-60 DT",
+        idn_substring="EL 9080-60 DT",
+        device_cls=EAEL9080_60DT,
+    ),
+    DeviceSpec(
+        key="psb10060-60",
+        label="EA PSB 10060-60",
+        idn_substring="PSB 10060-60",
+        device_cls=EAPSB10060_60,
+    ),
+)
+
+DEVICE_BY_KEY = {spec.key: spec for spec in SUPPORTED_DEVICES}
 
 
 def discover_ports() -> list[str]:
@@ -91,10 +126,77 @@ def parse_unit_id_selection(selection: str) -> list[int]:
     return [unit_id]
 
 
-def resolve_modbus_unit_id(port: str, baudrate: int, timeout: float, selection: str) -> int:
+def identify_device(port: str, baudrate: int, timeout: float) -> str:
+    transport = SerialSCPITransport(port=port, baudrate=baudrate, timeout=timeout)
+    device = SCPIDevice(transport)
+    device.open()
+    try:
+        return device.identify()
+    finally:
+        device.close()
+
+
+def resolve_device_spec(port: str, baudrate: int, timeout: float, device_key: str) -> tuple[DeviceSpec, str]:
+    if device_key != "auto":
+        spec = DEVICE_BY_KEY[device_key]
+        idn = identify_device(port, baudrate, timeout)
+        logger.info("SCPI identify: %s", idn)
+        return spec, idn
+
+    idn = identify_device(port, baudrate, timeout)
+    logger.info("SCPI identify: %s", idn)
+    for spec in SUPPORTED_DEVICES:
+        if spec.key != "auto" and spec.idn_substring in idn:
+            logger.info("Detected device model: %s", spec.label)
+            return spec, idn
+    raise RuntimeError(f"Unsupported device from *IDN?: {idn}")
+
+
+def create_scpi_device(spec: DeviceSpec, port: str, baudrate: int, timeout: float) -> SCPIDevice:
+    return spec.device_cls.scpi_serial(port, baudrate=baudrate, timeout=timeout)
+
+
+def create_modbus_device(spec: DeviceSpec, port: str, baudrate: int, unit_id: int, timeout: float) -> Any:
+    return spec.device_cls.modbus_rtu(port, baudrate=baudrate, unit_id=unit_id, timeout=timeout)
+
+
+def summarize_scpi_errors(device: SCPIDevice, *, max_errors: int = 3) -> str:
+    errors = [error for error in device.read_errors(max_errors=max_errors) if not error.startswith("0,")]
+    if not errors:
+        return "no SCPI errors reported"
+    return "; ".join(errors)
+
+
+def ensure_scpi_remote(device: SCPIDevice) -> None:
+    owner = device.remote_owner()
+    if owner.strip().upper() != "NONE":
+        return
+    errors = summarize_scpi_errors(device)
+    raise RuntimeError(f"Remote control was not accepted by the device (owner={owner}, errors={errors})")
+
+
+def ensure_output_enabled(device: SCPIDevice) -> None:
+    if device.is_output_enabled():
+        return
+    errors = summarize_scpi_errors(device)
+    raise RuntimeError(f"Output/input enable was not accepted by the device (errors={errors})")
+
+
+def annotate_modbus_remote_error(exc: Exception) -> RuntimeError:
+    text = str(exc)
+    if "exception 7" in text:
+        return RuntimeError(
+            "Modbus remote-control request was rejected by the device. "
+            "On EA 10000-series devices this usually means Local mode is active, "
+            "remote control is disabled on the HMI, the setup menu is open, or another interface owns remote control."
+        )
+    return RuntimeError(text)
+
+
+def resolve_modbus_unit_id(spec: DeviceSpec, port: str, baudrate: int, timeout: float, selection: str) -> int:
     errors: list[str] = []
     for unit_id in parse_unit_id_selection(selection):
-        load = EAEL9080_60DT.modbus_rtu(port, baudrate=baudrate, unit_id=unit_id, timeout=timeout)
+        load = create_modbus_device(spec, port, baudrate, unit_id, timeout)
         load.open()
         try:
             load.read_status()
@@ -109,21 +211,23 @@ def resolve_modbus_unit_id(port: str, baudrate: int, timeout: float, selection: 
     raise RuntimeError(f"Unable to communicate over Modbus RTU with any candidate unit id ({joined})")
 
 
-def probe_scpi(port: str, baudrate: int, timeout: float) -> None:
+def probe_scpi(spec: DeviceSpec, port: str, baudrate: int, timeout: float) -> None:
     log_header("SCPI Probe")
-    load = EAEL9080_60DT.scpi_serial(port, baudrate=baudrate, timeout=timeout)
-    load.open()
+    device = create_scpi_device(spec, port, baudrate, timeout)
+    device.open()
     try:
-        logger.info("IDN: %s", load.identify())
-        logger.info("Lock owner: %s", load.remote_owner())
-        logger.info("Input enabled: %s", load.is_input_enabled())
-        logger.info("Configured current: %s", load.query("CURR?"))
-        logger.info("Measurements: %s", format_measurement(load.measure_all()))
+        logger.info("Device: %s", spec.label)
+        logger.info("IDN: %s", device.identify())
+        logger.info("Lock owner: %s", device.remote_owner())
+        logger.info("Output enabled: %s", device.is_output_enabled())
+        logger.info("Configured current: %s", device.query("CURR?"))
+        logger.info("Measurements: %s", format_measurement(device.measure_all()))
     finally:
-        load.close()
+        device.close()
 
 
 def probe_modbus(
+    spec: DeviceSpec,
     port: str,
     baudrate: int,
     unit_id: int,
@@ -131,73 +235,83 @@ def probe_modbus(
     require_remote_sensing: bool,
 ) -> None:
     log_header("Modbus Probe")
+    logger.info("Device: %s", spec.label)
     logger.info("Using Modbus unit id: %d", unit_id)
-    load = EAEL9080_60DT.modbus_rtu(port, baudrate=baudrate, unit_id=unit_id, timeout=timeout)
-    load.open()
+    device = create_modbus_device(spec, port, baudrate, unit_id, timeout)
+    device.open()
     try:
-        status = load.read_status()
-        logger.info("Nominals: %s", load.read_nominals())
+        status = device.read_status()
+        logger.info("Nominals: %s", device.read_nominals())
         logger.info("Status: %s", format_status(status))
-        logger.info("Measurements: %s", format_measurement(load.read_measurements()))
-        logger.info("Protection thresholds: %s", format_measurement(load.read_protection_thresholds()))
+        logger.info("Measurements: %s", format_measurement(device.read_measurements()))
+        logger.info("Protection thresholds: %s", format_measurement(device.read_protection_thresholds()))
         if require_remote_sensing and not status.remote_sensing:
             raise RuntimeError("Remote sensing is not active on the device")
     finally:
-        load.close()
+        device.close()
 
 
-def exercise_scpi(port: str, baudrate: int, timeout: float, current_a: float, duration_s: float) -> None:
+def exercise_scpi(
+    spec: DeviceSpec,
+    port: str,
+    baudrate: int,
+    timeout: float,
+    current_a: float,
+    duration_s: float,
+) -> None:
     if current_a <= 0:
         raise SystemExit("--exercise-current-a must be greater than 0")
     if duration_s <= 0:
         raise SystemExit("--exercise-duration-s must be greater than 0")
 
-    log_header("SCPI Live Load Test")
-    load = EAEL9080_60DT.scpi_serial(port, baudrate=baudrate, timeout=timeout)
-    load.open()
+    log_header("SCPI Live Test")
+    device = create_scpi_device(spec, port, baudrate, timeout)
+    device.open()
     previous_current_a = None
     try:
-        if load.is_input_enabled():
-            raise SystemExit("The load input is already enabled. Turn it off before running --exercise-scpi.")
+        if device.is_output_enabled():
+            raise SystemExit("The device output/input is already enabled. Turn it off before running --exercise-scpi.")
 
-        baseline = load.measure_all()
-        previous_current_a = parse_scpi_numeric(load.query("CURR?"))
+        baseline = device.measure_all()
+        previous_current_a = parse_scpi_numeric(device.query("CURR?"))
         logger.info("Baseline: %s", format_measurement(baseline))
         logger.info("Arming remote control and setting %.3f A for %.2f s", current_a, duration_s)
 
-        load.set_remote(True)
+        device.set_remote(True)
         time.sleep(REMOTE_SETTLE_S)
-        load.set_current(current_a)
+        ensure_scpi_remote(device)
+        device.set_current(current_a)
         time.sleep(VALUE_SETTLE_S)
-        logger.info("Configured current after write: %s", load.query("CURR?"))
-        load.set_input_enabled(True)
-        time.sleep(INPUT_SETTLE_S)
+        logger.info("Configured current after write: %s", device.query("CURR?"))
+        device.set_output_enabled(True)
+        time.sleep(OUTPUT_SETTLE_S)
+        ensure_output_enabled(device)
         time.sleep(duration_s)
 
-        under_load = load.measure_all()
+        under_load = device.measure_all()
         logger.info("Under load: %s", format_measurement(under_load))
-        logger.info("Lock owner: %s", load.remote_owner())
+        logger.info("Lock owner: %s", device.remote_owner())
     finally:
         cleanup_errors: list[str] = []
         for label, action in (
-            ("disable input", lambda: load.set_input_enabled(False)),
+            ("disable output", lambda: device.set_output_enabled(False)),
             (
                 "restore current",
-                (lambda: load.set_current(previous_current_a)) if previous_current_a is not None else (lambda: None),
+                (lambda: device.set_current(previous_current_a)) if previous_current_a is not None else (lambda: None),
             ),
-            ("release remote", lambda: load.set_remote(False)),
-            ("close transport", load.close),
+            ("release remote", lambda: device.set_remote(False)),
+            ("close transport", device.close),
         ):
             try:
                 action()
             except Exception as exc:  # pragma: no cover - cleanup path
                 cleanup_errors.append(f"{label}: {type(exc).__name__}: {exc}")
-        if cleanup_errors:
-            for error in cleanup_errors:
-                logger.warning("Cleanup issue: %s", error)
+        for error in cleanup_errors:
+            logger.warning("Cleanup issue: %s", error)
 
 
 def exercise_modbus(
+    spec: DeviceSpec,
     port: str,
     baudrate: int,
     unit_id: int,
@@ -211,62 +325,72 @@ def exercise_modbus(
     if duration_s <= 0:
         raise SystemExit("--exercise-duration-s must be greater than 0")
 
-    log_header("Modbus Live Load Test")
+    log_header("Modbus Live Test")
+    logger.info("Device: %s", spec.label)
     logger.info("Using Modbus unit id: %d", unit_id)
-    scpi = EAEL9080_60DT.scpi_serial(port, baudrate=baudrate, timeout=1.0)
-    load = EAEL9080_60DT.modbus_rtu(port, baudrate=baudrate, unit_id=unit_id, timeout=timeout)
+    scpi = create_scpi_device(spec, port, baudrate, timeout=1.0)
+    device = create_modbus_device(spec, port, baudrate, unit_id, timeout)
     scpi.open()
-    load.open()
+    device.open()
     previous_current_a = None
     try:
         previous_current_a = parse_scpi_numeric(scpi.query("CURR?"))
-        initial_status = load.read_status()
+        initial_status = device.read_status()
         if initial_status.dc_on:
-            raise SystemExit("The load input is already enabled. Turn it off before running --exercise-modbus.")
+            raise SystemExit("The device output/input is already enabled. Turn it off before running --exercise-modbus.")
         if require_remote_sensing and not initial_status.remote_sensing:
             raise RuntimeError("Remote sensing is not active on the device")
 
-        baseline = load.read_measurements()
+        baseline = device.read_measurements()
         logger.info("Baseline: %s", format_measurement(baseline))
         logger.info("Arming remote control and setting %.3f A for %.2f s", current_a, duration_s)
 
-        load.set_remote(True)
+        try:
+            device.set_remote(True)
+        except InstrumentError as exc:
+            raise annotate_modbus_remote_error(exc) from exc
         time.sleep(REMOTE_SETTLE_S)
-        load.set_current(current_a)
+        device.set_current(current_a)
         time.sleep(VALUE_SETTLE_S)
         logger.info("Configured current after write: %s", scpi.query("CURR?"))
-        load.set_input_enabled(True)
-        time.sleep(INPUT_SETTLE_S)
+        device.set_output_enabled(True)
+        time.sleep(OUTPUT_SETTLE_S)
+        ensure_output_enabled(scpi)
         time.sleep(duration_s)
 
-        under_load = load.read_measurements()
-        under_load_status = load.read_status()
+        under_load = device.read_measurements()
+        under_load_status = device.read_status()
         logger.info("Under load: %s", format_measurement(under_load))
         logger.info("Status under load: %s", format_status(under_load_status))
     finally:
         cleanup_errors: list[str] = []
         for label, action in (
-            ("disable input", lambda: load.set_input_enabled(False)),
+            ("disable output", lambda: device.set_output_enabled(False)),
             (
                 "restore current",
                 (lambda: scpi.write(f"CURR {previous_current_a}")) if previous_current_a is not None else (lambda: None),
             ),
-            ("release remote", lambda: load.set_remote(False)),
-            ("close transport", load.close),
+            ("release remote", lambda: device.set_remote(False)),
+            ("close transport", device.close),
             ("close scpi transport", scpi.close),
         ):
             try:
                 action()
             except Exception as exc:  # pragma: no cover - cleanup path
                 cleanup_errors.append(f"{label}: {type(exc).__name__}: {exc}")
-        if cleanup_errors:
-            for error in cleanup_errors:
-                logger.warning("Cleanup issue: %s", error)
+        for error in cleanup_errors:
+            logger.warning("Cleanup issue: %s", error)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Verify the EA-EL 9080-60 DT driver against a live USB device.")
+    parser = argparse.ArgumentParser(description="Verify supported EA devices against a live serial connection.")
     parser.add_argument("--port", help="Serial port for the instrument, for example /dev/ttyACM0")
+    parser.add_argument(
+        "--device",
+        choices=[spec.key for spec in SUPPORTED_DEVICES],
+        default="auto",
+        help="Device model to use, or auto-detect from *IDN?",
+    )
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument("--unit-id", default="auto", help="Modbus unit id: 0, 1, or auto")
     parser.add_argument("--log-level", default="INFO", help="Python log level, for example INFO or DEBUG")
@@ -277,17 +401,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-remote-sensing",
         action="store_true",
-        help="Fail the Modbus probe or live load test unless remote sensing is active.",
+        help="Fail the probe or live test unless remote sensing is active.",
     )
     parser.add_argument(
         "--exercise-scpi",
         action="store_true",
-        help="Run a short live load step using SCPI writes. Requires a real source connected to the load.",
+        help="Run a short live test using SCPI writes. Requires a real source or load connected appropriately.",
     )
     parser.add_argument(
         "--exercise-modbus",
         action="store_true",
-        help="Run a short live load step using Modbus writes. Requires a real source connected to the load.",
+        help="Run a short live test using Modbus writes. Requires a real source or load connected appropriately.",
     )
     parser.add_argument("--exercise-current-a", type=float, default=0.5)
     parser.add_argument("--exercise-duration-s", type=float, default=2.0)
@@ -306,9 +430,12 @@ def main() -> int:
     else:
         raise SystemExit(f"Serial port not present: {port}")
 
+    spec, _idn = resolve_device_spec(port, args.baudrate, args.scpi_timeout, args.device)
+
     modbus_unit_id = None
     if not args.skip_modbus or args.exercise_modbus:
         modbus_unit_id = resolve_modbus_unit_id(
+            spec=spec,
             port=port,
             baudrate=args.baudrate,
             timeout=args.modbus_timeout,
@@ -318,13 +445,14 @@ def main() -> int:
     failures: list[str] = []
     if not args.skip_scpi:
         try:
-            probe_scpi(port=port, baudrate=args.baudrate, timeout=args.scpi_timeout)
+            probe_scpi(spec, port=port, baudrate=args.baudrate, timeout=args.scpi_timeout)
         except Exception as exc:
             failures.append(f"SCPI probe failed: {type(exc).__name__}: {exc}")
             logger.error("%s", failures[-1])
     if not args.skip_modbus:
         try:
             probe_modbus(
+                spec,
                 port=port,
                 baudrate=args.baudrate,
                 unit_id=modbus_unit_id,
@@ -337,6 +465,7 @@ def main() -> int:
     if args.exercise_scpi:
         try:
             exercise_scpi(
+                spec,
                 port=port,
                 baudrate=args.baudrate,
                 timeout=args.scpi_timeout,
@@ -344,11 +473,12 @@ def main() -> int:
                 duration_s=args.exercise_duration_s,
             )
         except Exception as exc:
-            failures.append(f"SCPI live load test failed: {type(exc).__name__}: {exc}")
+            failures.append(f"SCPI live test failed: {type(exc).__name__}: {exc}")
             logger.error("%s", failures[-1])
     if args.exercise_modbus:
         try:
             exercise_modbus(
+                spec,
                 port=port,
                 baudrate=args.baudrate,
                 unit_id=modbus_unit_id,
@@ -358,7 +488,7 @@ def main() -> int:
                 require_remote_sensing=args.require_remote_sensing,
             )
         except Exception as exc:
-            failures.append(f"Modbus live load test failed: {type(exc).__name__}: {exc}")
+            failures.append(f"Modbus live test failed: {type(exc).__name__}: {exc}")
             logger.error("%s", failures[-1])
     return 1 if failures else 0
 

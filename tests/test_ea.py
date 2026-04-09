@@ -57,12 +57,14 @@ class FakeSCPITransport:
     def __init__(self, responses: dict[str, str] | None = None) -> None:
         self.responses = responses or {}
         self.commands: list[tuple[str, str]] = []
+        self.open_calls = 0
+        self.close_calls = 0
 
     def open(self) -> None:
-        pass
+        self.open_calls += 1
 
     def close(self) -> None:
-        pass
+        self.close_calls += 1
 
     def write(self, command: str) -> None:
         self.commands.append(("write", command))
@@ -81,6 +83,17 @@ def test_psb_scpi_uses_outp_commands():
     assert transport.commands == [("write", "OUTP ON"), ("query", "OUTP?")]
 
 
+def test_scpi_device_supports_context_manager():
+    transport = FakeSCPITransport()
+    device = EASCPIBase(transport, EAPSB10060_60.RATINGS)
+
+    with device as opened:
+        assert opened is device
+
+    assert transport.open_calls == 1
+    assert transport.close_calls == 1
+
+
 def test_el_scpi_uses_inp_commands():
     transport = FakeSCPITransport({"INP?": "ON"})
     device = EAELSCPIBase(transport, EAEL9080_60DT.RATINGS)
@@ -95,12 +108,14 @@ class FakeModbusClient:
         self.responses = responses
         self.read_calls: list[tuple[int, int]] = []
         self.coil_writes: list[tuple[int, bool]] = []
+        self.open_calls = 0
+        self.close_calls = 0
 
     def open(self) -> None:
-        pass
+        self.open_calls += 1
 
     def close(self) -> None:
-        pass
+        self.close_calls += 1
 
     def read_holding_registers(self, address: int, count: int) -> list[int]:
         self.read_calls.append((address, count))
@@ -141,6 +156,17 @@ def test_modbus_boolean_controls_use_coil_writes():
     assert client.coil_writes == [(402, True), (405, False)]
 
 
+def test_modbus_device_supports_context_manager():
+    client = FakeModbusClient({})
+    device = EAModbusBase(client, EAEL9080_60DT.RATINGS)
+
+    with device as opened:
+        assert opened is device
+
+    assert client.open_calls == 1
+    assert client.close_calls == 1
+
+
 def test_el_modbus_rtu_defaults_to_unit_id_zero():
     device = EAEL9080_60DT.modbus_rtu("/dev/ttyACM0")
     assert device.client.unit_id == 0
@@ -149,6 +175,12 @@ def test_el_modbus_rtu_defaults_to_unit_id_zero():
 def test_psb_modbus_tcp_defaults_to_unit_id_zero():
     device = EAPSB10060_60.modbus_tcp("192.168.0.42")
     assert device.client.unit_id == 0
+
+
+def test_psb_ratings_match_psb_10060_60():
+    assert EAPSB10060_60.RATINGS.voltage_v == 60.0
+    assert EAPSB10060_60.RATINGS.current_a == 60.0
+    assert EAPSB10060_60.RATINGS.power_w == 1500.0
 
 
 def test_el_modbus_tcp_is_not_supported():

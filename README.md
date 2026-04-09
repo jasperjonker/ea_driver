@@ -30,22 +30,10 @@ With `uv`:
 uv sync
 ```
 
-With USB serial support:
-
-```bash
-uv sync --extra serial
-```
-
 Or with `pip`:
 
 ```bash
 pip install -e .
-```
-
-With USB serial support:
-
-```bash
-pip install -e .[serial]
 ```
 
 ## Usage
@@ -55,14 +43,12 @@ pip install -e .[serial]
 ```python
 from ea_driver import EAPSB10060_60
 
-psu = EAPSB10060_60.scpi_tcp("192.168.0.42")
-psu.open()
-psu.set_remote(True)
-psu.set_voltage(54.0)
-psu.set_source_current(10.0)
-psu.set_output_enabled(True)
-print(psu.measure_all())
-psu.close()
+with EAPSB10060_60.scpi_tcp("192.168.0.42") as psu:
+    psu.set_remote(True)
+    psu.set_voltage(24.0)
+    psu.set_source_current(10.0)
+    psu.set_output_enabled(True)
+    print(psu.measure_all())
 ```
 
 ### EL over USB Modbus RTU
@@ -70,14 +56,12 @@ psu.close()
 ```python
 from ea_driver import EAEL9080_60DT
 
-load = EAEL9080_60DT.modbus_rtu("/dev/ttyUSB0", baudrate=115200, unit_id=0)
-load.open()
-load.set_remote(True)
-load.set_current(20.0)
-load.set_input_enabled(True)
-print(load.read_measurements())
-print(load.read_status())
-load.close()
+with EAEL9080_60DT.modbus_rtu("/dev/ttyUSB0", baudrate=115200, unit_id=0) as load:
+    load.set_remote(True)
+    load.set_current(20.0)
+    load.set_input_enabled(True)
+    print(load.read_measurements())
+    print(load.read_status())
 ```
 
 For devices left in the default "Limited" Modbus compliance mode, use RTU slave address `0`.
@@ -94,69 +78,74 @@ Be aware that EA devices can close idle TCP socket connections after a timeout. 
 connection open for long gaps between commands, either reopen the connection before the next operation or set
 the device's TCP timeout / keep-alive settings appropriately on the instrument.
 
-### EL over USB Modbus RTU with Terminal Logging, Kelvin Sense, 1 A CC
+### Example Scripts
 
-Enable remote sensing / Kelvin mode on the instrument first. The example below verifies that the
-device reports `remote_sensing=True` before it enables the load.
+The repository includes two plain Python example files:
 
-```python
-import logging
-import time
+- `examples/el_complete.py`
+- `examples/psb_complete.py`
 
-from ea_driver import EAEL9080_60DT
+These are intended to be run after `uv sync` or `pip install -e .`, so they import the installed
+package directly with `from ea_driver import ...`.
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
-log = logging.getLogger("ea_driver.example")
+### EL Example
 
-port = "/dev/serial/by-id/usb-EA_Elektro-Automatik_GmbH___Co._KG_EL_9080-60_DT_2228100002-if00"
-load = EAEL9080_60DT.modbus_rtu(port, baudrate=115200, unit_id=0)
+The EL example script in `examples/el_complete.py` supports:
 
-load.open()
-try:
-    status = load.read_status()
-    log.info("Initial status: %s", status)
-    if not status.remote_sensing:
-        raise RuntimeError("Kelvin / remote sensing is not active on the load")
+- USB Modbus RTU for Kelvin-aware runs with `remote_sensing` status checks
+- USB SCPI
+- Ethernet SCPI
+- `CC`, `CP`, and `CR` setpoint modes
 
-    load.set_remote(True)
-    time.sleep(0.3)
+By default it is configured for USB Modbus RTU with a 4-wire / Kelvin check and a `1 A`
+constant-current run. Run it with:
 
-    load.set_current(1.0)
-    time.sleep(0.1)
-    load.set_input_enabled(True)
-    time.sleep(0.5)
-
-    status = load.read_status()
-    measurement = load.read_measurements()
-    log.info("Under load status: %s", status)
-    log.info(
-        "Under load measurement: %.3f V, %.3f A, %.3f W",
-        measurement.voltage_v,
-        measurement.current_a,
-        measurement.power_w,
-    )
-
-    if status.regulation_mode != "CC":
-        raise RuntimeError(f"Expected CC mode, got {status.regulation_mode}")
-finally:
-    try:
-        load.set_input_enabled(False)
-    finally:
-        try:
-            load.set_remote(False)
-        finally:
-            load.close()
+```bash
+uv sync
+uv run python examples/el_complete.py
 ```
+
+To run the same example over Ethernet instead, edit the configuration block at the top of
+`examples/el_complete.py`:
+
+- set `TRANSPORT = "lan-scpi"`
+- set `HOST = "192.168.0.42"`
+
+For `lan-scpi`, the library can control and measure the load, but the explicit `remote_sensing`
+/ Kelvin status bit is currently exposed through the Modbus path only.
+
+### PSB Example
+
+The PSB example script in `examples/psb_complete.py` supports:
+
+- USB SCPI
+- Ethernet SCPI
+- source and sink current workflows
+- optional source power and resistance setpoints
+
+By default it is configured for USB SCPI source mode. Run it with:
+
+```bash
+uv sync
+uv run python examples/psb_complete.py
+```
+
+To switch it to Ethernet sink mode, edit the configuration block at the top of
+`examples/psb_complete.py`:
+
+- set `TRANSPORT = "lan-scpi"`
+- set `HOST = "192.168.0.50"`
+- set `MODE = "sink"`
+
+Without a connected DUT, battery, or external load, the PSB example will still exercise control,
+logging, CSV capture, and measurement readback, but measured power transfer will stay near zero.
 
 ### Verification CLI
 
 The packaged verifier uses Python `logging` and can log directly to the terminal:
 
 ```bash
-uv sync --extra serial
+uv sync
 uv run ea-driver-verify \
   --port /dev/serial/by-id/usb-EA_Elektro-Automatik_GmbH___Co._KG_EL_9080-60_DT_2228100002-if00 \
   --exercise-modbus \
@@ -169,7 +158,7 @@ uv run ea-driver-verify \
 You can also run it as a module:
 
 ```bash
-uv sync --extra serial
+uv sync
 uv run python -m ea_driver.verify --help
 ```
 

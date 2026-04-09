@@ -21,13 +21,12 @@ classifiers = [
   "Topic :: Scientific/Engineering",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = []
+dependencies = ["pyserial>=3.5"]
 
 [project.scripts]
 ea-driver-verify = "ea_driver.verify:main"
 
 [project.optional-dependencies]
-serial = ["pyserial>=3.5"]
 dev = ["pytest>=8.0", "build>=1.2", "hatch>=1.14"]
 
 [tool.hatch.version]
@@ -43,6 +42,7 @@ packages = ["src/ea_driver"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",
+  "/examples",
   "/tests",
   "/README.md",
   "/pyproject.toml",
