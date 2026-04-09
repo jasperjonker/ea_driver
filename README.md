@@ -122,6 +122,7 @@ The PSB example script in `examples/psb_complete.py` supports:
 - Ethernet SCPI
 - source and sink current workflows
 - optional source power and resistance setpoints
+- explicit source-only and sink-only helpers according to the PSB manual
 
 By default it is configured for USB SCPI source mode. Run it with:
 
@@ -136,6 +137,14 @@ To switch it to Ethernet sink mode, edit the configuration block at the top of
 - set `TRANSPORT = "lan-scpi"`
 - set `HOST = "192.168.0.50"`
 - set `MODE = "sink"`
+
+The PSB API also now exposes PSB-specific helpers beyond the generic PSU methods, for example:
+
+- `set_source_only_mode()` to force source-only behavior by setting the sink current to `0`
+- `set_sink_only_mode()` to force sink-only behavior by setting the voltage to `0`
+- `set_power_stage_mode("UIP" | "UIR")` and `set_resistance_mode_enabled(...)`
+- `set_sink_current(...)`, `set_sink_power(...)`, `set_sink_resistance(...)`
+- function-generator entry points such as `select_function_generator_mode(...)`, `configure_arbitrary_sequence_point(...)`, and `load_xy_table(...)`
 
 Without a connected DUT, battery, or external load, the PSB example will still exercise control,
 logging, CSV capture, and measurement readback, but measured power transfer will stay near zero.

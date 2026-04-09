@@ -67,9 +67,11 @@ def build_device():
 
 def apply_mode(device) -> None:
     if MODE == "source":
+        device.set_source_only_mode()
         device.set_source_current(CURRENT_A)
         return
     if MODE == "sink":
+        device.set_sink_only_mode()
         device.set_sink_current(CURRENT_A)
         return
     raise ValueError(f"Unsupported PSB mode: {MODE}")
@@ -116,9 +118,18 @@ def run() -> None:
                 device.set_voltage(VOLTAGE_V)
                 apply_mode(device)
                 if POWER_LIMIT_W is not None:
-                    device.set_source_power(POWER_LIMIT_W)
+                    if MODE == "source":
+                        device.set_source_power(POWER_LIMIT_W)
+                    else:
+                        device.set_sink_power(POWER_LIMIT_W)
                 if RESISTANCE_OHM is not None:
-                    device.set_source_resistance(RESISTANCE_OHM)
+                    device.set_resistance_mode_enabled(True)
+                    if MODE == "source":
+                        device.set_source_resistance(RESISTANCE_OHM)
+                    else:
+                        device.set_sink_resistance(RESISTANCE_OHM)
+                else:
+                    device.set_resistance_mode_enabled(False)
 
                 device.set_output_enabled(True)
                 time.sleep(ENABLE_SETTLE_S)

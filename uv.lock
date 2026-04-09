@@ -255,6 +255,9 @@ wheels = [
 [[package]]
 name = "ea-driver"
 source = { editable = "." }
+dependencies = [
+    { name = "pyserial" },
+]
 
 [package.optional-dependencies]
 dev = [
@@ -262,18 +265,15 @@ dev = [
     { name = "hatch" },
     { name = "pytest" },
 ]
-serial = [
-    { name = "pyserial" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.2" },
     { name = "hatch", marker = "extra == 'dev'", specifier = ">=1.14" },
-    { name = "pyserial", marker = "extra == 'serial'", specifier = ">=3.5" },
+    { name = "pyserial", specifier = ">=3.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
 ]
-provides-extras = ["dev", "serial"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "filelock"
