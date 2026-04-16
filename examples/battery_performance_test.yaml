@@ -1,0 +1,43 @@
+# Edit this file and run:
+#   uv run python examples/battery_performance_test.py
+#
+# The Python example auto-loads this YAML file when `--config` is not provided.
+# Change `battery_config` for your pack and use `stage_overrides` to tweak or
+# disable individual default stages without copying the whole stage list.
+
+output_config:
+  run_name: drone_battery_cycle_test
+  log_directory: logs
+
+connection_config:
+  transport: usb-scpi
+  serial_port: null
+  serial_glob: "*PSB_10060-60*"
+  host: 192.168.0.50
+  lan_scpi_port: 5025
+  baudrate: 115200
+  timeout_s: 1.0
+
+battery_config:
+  series_cells: 6
+  cutoff_per_cell_v: 3.3
+  max_per_cell_v: 4.2
+  discharge_cutoff_confirm_samples: 3
+  charge_termination_confirm_samples: 5
+
+test_config:
+  cycle_count: 1
+  max_sink_power_w: 1500.0
+  max_source_power_w: 300.0
+  initial_settle_s: 1.0
+  mode_switch_settle_s: 1.0
+  ramp_step_a: 2.0
+  ramp_step_settle_s: 1.0
+  sample_interval_s: 1.0
+  rest_sample_interval_s: 2.0
+  log_every_n_samples: 10
+  max_total_test_duration_s: 28800.0
+
+protection_config: {}
+
+stage_overrides: {}

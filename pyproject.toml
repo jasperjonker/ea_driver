@@ -21,7 +21,7 @@ classifiers = [
   "Topic :: Scientific/Engineering",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = ["pyserial>=3.5"]
+dependencies = ["pyserial>=3.5", "PyYAML>=6.0"]
 
 [project.scripts]
 ea-driver-verify = "ea_driver.verify:main"

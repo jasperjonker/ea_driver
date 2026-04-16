@@ -3,6 +3,8 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+*.codex
 dist/
 build/
 src/ea_driver/_version.py
+logs/

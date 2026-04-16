@@ -13,6 +13,9 @@ EA_MEASURE_FULL_SCALE = 0xFFFF
 EA_PROTECTION_FULL_SCALE = 0xE147
 
 _SCPI_NUMERIC_RE = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
+_SUPERVISION_ACTIONS = {"NONE", "SIGNAL", "WARNING", "ALARM"}
+_SOURCE_SUPERVISION_EVENTS = {"UVD", "UCD", "OVD", "OCD", "OPD"}
+_SINK_SUPERVISION_EVENTS = {"UCD", "OCD", "OPD"}
 
 
 def _percent_to_raw(percent: float, full_scale: int) -> int:
@@ -49,6 +52,20 @@ def _parse_scpi_numeric(response: str) -> float:
 
 def _parse_scpi_csv(response: str) -> list[str]:
     return [item.strip() for item in response.split(",")]
+
+
+def _normalize_supervision_event(event: str, *, allowed: Sequence[str]) -> str:
+    normalized = event.strip().upper()
+    if normalized not in allowed:
+        raise ValueError(f"Unsupported supervision event: {event}")
+    return normalized
+
+
+def _normalize_supervision_action(action: str) -> str:
+    normalized = action.strip().upper()
+    if normalized not in _SUPERVISION_ACTIONS:
+        raise ValueError(f"Unsupported supervision action: {action}")
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +176,24 @@ class EASCPIBase(SCPIDevice):
     def set_power(self, watts: float) -> None:
         self.set_source_power(watts)
 
+    def set_source_voltage_protection(self, volts: float) -> None:
+        self.write(f"VOLT:PROT {volts}")
+
+    def get_source_voltage_protection(self) -> float:
+        return _parse_scpi_numeric(self.query("VOLT:PROT?"))
+
+    def set_source_current_protection(self, amps: float) -> None:
+        self.write(f"CURR:PROT {amps}")
+
+    def get_source_current_protection(self) -> float:
+        return _parse_scpi_numeric(self.query("CURR:PROT?"))
+
+    def set_source_power_protection(self, watts: float) -> None:
+        self.write(f"POW:PROT {watts}")
+
+    def get_source_power_protection(self) -> float:
+        return _parse_scpi_numeric(self.query("POW:PROT?"))
+
     def set_source_resistance(self, ohms: float) -> None:
         self.write(f"RES {_normalize_resistance_value(ohms, self.ratings)}")
 
@@ -222,6 +257,18 @@ class EAPSBSCPIBase(EASCPIBase):
     def get_sink_resistance_setpoint(self) -> float:
         return _parse_scpi_numeric(self.query("SINK:RES?"))
 
+    def set_sink_current_protection(self, amps: float) -> None:
+        self.write(f"SINK:CURR:PROT {amps}")
+
+    def get_sink_current_protection(self) -> float:
+        return _parse_scpi_numeric(self.query("SINK:CURR:PROT?"))
+
+    def set_sink_power_protection(self, watts: float) -> None:
+        self.write(f"SINK:POW:PROT {watts}")
+
+    def get_sink_power_protection(self) -> float:
+        return _parse_scpi_numeric(self.query("SINK:POW:PROT?"))
+
     def set_source_only_mode(self) -> None:
         self.set_sink_current(0.0)
 
@@ -239,6 +286,32 @@ class EAPSBSCPIBase(EASCPIBase):
 
     def set_resistance_mode_enabled(self, enabled: bool) -> None:
         self.set_power_stage_mode("UIR" if enabled else "UIP")
+
+    def configure_source_supervision(self, event: str, threshold: float, action: str) -> None:
+        normalized_event = _normalize_supervision_event(event, allowed=_SOURCE_SUPERVISION_EVENTS)
+        normalized_action = _normalize_supervision_action(action)
+        self.write(f"SYST:CONF:{normalized_event} {threshold}")
+        self.write(f"SYST:CONF:{normalized_event}:ACT {normalized_action}")
+
+    def read_source_supervision(self, event: str) -> tuple[float, str]:
+        normalized_event = _normalize_supervision_event(event, allowed=_SOURCE_SUPERVISION_EVENTS)
+        return (
+            _parse_scpi_numeric(self.query(f"SYST:CONF:{normalized_event}?")),
+            self.query(f"SYST:CONF:{normalized_event}:ACT?").strip().upper(),
+        )
+
+    def configure_sink_supervision(self, event: str, threshold: float, action: str) -> None:
+        normalized_event = _normalize_supervision_event(event, allowed=_SINK_SUPERVISION_EVENTS)
+        normalized_action = _normalize_supervision_action(action)
+        self.write(f"SYST:SINK:CONF:{normalized_event} {threshold}")
+        self.write(f"SYST:SINK:CONF:{normalized_event}:ACT {normalized_action}")
+
+    def read_sink_supervision(self, event: str) -> tuple[float, str]:
+        normalized_event = _normalize_supervision_event(event, allowed=_SINK_SUPERVISION_EVENTS)
+        return (
+            _parse_scpi_numeric(self.query(f"SYST:SINK:CONF:{normalized_event}?")),
+            self.query(f"SYST:SINK:CONF:{normalized_event}:ACT?").strip().upper(),
+        )
 
     def questionable_status(self) -> int:
         return int(self.query("STAT:QUES:COND?").strip())

@@ -242,6 +242,59 @@ def test_psb_scpi_clamps_sink_resistance_to_valid_range():
     assert transport.commands == [("write", "SINK:RES 0.04")]
 
 
+def test_psb_scpi_supports_protections_and_supervision_helpers():
+    transport = FakeSCPITransport(
+        {
+            "VOLT:PROT?": "25.4 V",
+            "CURR:PROT?": "6.0 A",
+            "POW:PROT?": "320.0 W",
+            "SINK:CURR:PROT?": "55.0 A",
+            "SINK:POW:PROT?": "1500.0 W",
+            "SYST:CONF:OVD?": "25.3 V",
+            "SYST:CONF:OVD:ACT?": "ALARM",
+            "SYST:SINK:CONF:UCD?": "0.5 A",
+            "SYST:SINK:CONF:UCD:ACT?": "WARNING",
+        }
+    )
+    device = EAPSBSCPIBase(transport, EAPSB10060_60.RATINGS)
+
+    device.set_source_voltage_protection(25.4)
+    device.set_source_current_protection(6.0)
+    device.set_source_power_protection(320.0)
+    device.set_sink_current_protection(55.0)
+    device.set_sink_power_protection(1500.0)
+    device.configure_source_supervision("OVD", 25.3, "ALARM")
+    device.configure_sink_supervision("UCD", 0.5, "WARNING")
+
+    assert device.get_source_voltage_protection() == 25.4
+    assert device.get_source_current_protection() == 6.0
+    assert device.get_source_power_protection() == 320.0
+    assert device.get_sink_current_protection() == 55.0
+    assert device.get_sink_power_protection() == 1500.0
+    assert device.read_source_supervision("OVD") == (25.3, "ALARM")
+    assert device.read_sink_supervision("UCD") == (0.5, "WARNING")
+    assert transport.commands == [
+        ("write", "VOLT:PROT 25.4"),
+        ("write", "CURR:PROT 6.0"),
+        ("write", "POW:PROT 320.0"),
+        ("write", "SINK:CURR:PROT 55.0"),
+        ("write", "SINK:POW:PROT 1500.0"),
+        ("write", "SYST:CONF:OVD 25.3"),
+        ("write", "SYST:CONF:OVD:ACT ALARM"),
+        ("write", "SYST:SINK:CONF:UCD 0.5"),
+        ("write", "SYST:SINK:CONF:UCD:ACT WARNING"),
+        ("query", "VOLT:PROT?"),
+        ("query", "CURR:PROT?"),
+        ("query", "POW:PROT?"),
+        ("query", "SINK:CURR:PROT?"),
+        ("query", "SINK:POW:PROT?"),
+        ("query", "SYST:CONF:OVD?"),
+        ("query", "SYST:CONF:OVD:ACT?"),
+        ("query", "SYST:SINK:CONF:UCD?"),
+        ("query", "SYST:SINK:CONF:UCD:ACT?"),
+    ]
+
+
 def test_psb_scpi_function_generator_helpers_emit_documented_commands():
     transport = FakeSCPITransport({})
     device = EAPSBSCPIBase(transport, EAPSB10060_60.RATINGS)

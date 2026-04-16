@@ -88,6 +88,11 @@ The repository includes two plain Python example files:
 These are intended to be run after `uv sync` or `pip install -e .`, so they import the installed
 package directly with `from ea_driver import ...`.
 
+Both examples now accept connection overrides on the command line and can auto-discover
+the serial port from `/dev/serial/by-id`, `/dev/ttyACM*`, and `/dev/ttyUSB*`.
+They also read `EA_DRIVER_*` environment variables, plus script-specific prefixes such as
+`EA_EL_EXAMPLE_*` and `EA_PSB_EXAMPLE_*`.
+
 ### EL Example
 
 The EL example script in `examples/el_complete.py` supports:
@@ -105,11 +110,17 @@ uv sync
 uv run python examples/el_complete.py
 ```
 
-To run the same example over Ethernet instead, edit the configuration block at the top of
-`examples/el_complete.py`:
+To run the same example over Ethernet instead:
 
-- set `TRANSPORT = "lan-scpi"`
-- set `HOST = "192.168.0.42"`
+```bash
+uv run python examples/el_complete.py --transport lan-scpi --host 192.168.0.42
+```
+
+To inspect the effective configuration without opening the device:
+
+```bash
+uv run python examples/el_complete.py --print-config
+```
 
 For `lan-scpi`, the library can control and measure the load, but the explicit `remote_sensing`
 / Kelvin status bit is currently exposed through the Modbus path only.
@@ -118,25 +129,38 @@ For `lan-scpi`, the library can control and measure the load, but the explicit `
 
 The PSB example script in `examples/psb_complete.py` supports:
 
+- USB Modbus RTU for Kelvin-aware runs with `remote_sensing` status checks
 - USB SCPI
 - Ethernet SCPI
+- Ethernet Modbus TCP
 - source and sink current workflows
 - optional source power and resistance setpoints
 - explicit source-only and sink-only helpers according to the PSB manual
 
-By default it is configured for USB SCPI source mode. Run it with:
+By default it is configured for USB Modbus RTU source mode with a 4-wire / Kelvin check. Run it with:
 
 ```bash
 uv sync
 uv run python examples/psb_complete.py
 ```
 
-To switch it to Ethernet sink mode, edit the configuration block at the top of
-`examples/psb_complete.py`:
+To switch it to Ethernet sink mode over SCPI:
 
-- set `TRANSPORT = "lan-scpi"`
-- set `HOST = "192.168.0.50"`
-- set `MODE = "sink"`
+```bash
+uv run python examples/psb_complete.py --transport lan-scpi --host 192.168.0.50 --mode sink
+```
+
+To inspect the effective configuration without opening the device:
+
+```bash
+uv run python examples/psb_complete.py --print-config
+```
+
+On PSB 10000 devices, remote sensing is enabled by wiring the rear `Sense` connector and the instrument
+detects it automatically. The library does not expose a command to turn Kelvin sensing on or off because EA's
+programming interface exposes it as a status bit, not a software toggle. If you want the example to verify that
+4-wire sensing is active, keep it on `usb-modbus` or switch it to `lan-modbus`. EA's operating manual also
+notes that remote sensing is only effective during constant-voltage operation.
 
 The PSB API also now exposes PSB-specific helpers beyond the generic PSU methods, for example:
 
@@ -148,6 +172,56 @@ The PSB API also now exposes PSB-specific helpers beyond the generic PSU methods
 
 Without a connected DUT, battery, or external load, the PSB example will still exercise control,
 logging, CSV capture, and measurement readback, but measured power transfer will stay near zero.
+
+### Battery Test Example
+
+The repository also includes `examples/battery_performance_test.py` plus the
+editable sibling config file `examples/battery_performance_test.yaml` for staged
+discharge / rest / recharge workflows on the PSB.
+
+The example auto-loads that YAML file, so the normal workflow is simply:
+
+```bash
+uv run python examples/battery_performance_test.py
+```
+
+Battery-dependent defaults are derived from `battery_config`, so changing
+`series_cells` or `max_per_cell_v` also updates the default charge voltage and
+source-side voltage protections. To trim or tweak the default sequence without
+copying the whole `stages` list, use `stage_overrides` keyed by stage name.
+
+You can still point at another config file or print the fully expanded runtime
+config:
+
+```bash
+uv run python examples/battery_performance_test.py --config /tmp/my_profile.yaml
+uv run python examples/battery_performance_test.py --print-config > /tmp/expanded_profile.yaml
+```
+
+For example, this is enough to switch to an `8S` pack and keep only a tiny
+sanity discharge plus a short rest:
+
+```yaml
+battery_config:
+  series_cells: 8
+
+stage_overrides:
+  sanity_1a:
+    current_a: 0.2
+    duration_s: 2.0
+  burst_50a:
+    enabled: false
+  sustained_30a:
+    enabled: false
+  cruise_15a_to_cutoff:
+    enabled: false
+  post_discharge_recovery:
+    duration_s: 2.0
+  recharge_cc_cv:
+    enabled: false
+  post_charge_recovery:
+    enabled: false
+```
 
 ### Verification CLI
 
