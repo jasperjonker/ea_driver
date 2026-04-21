@@ -28,7 +28,7 @@ def test_el_complete_build_log_path_uses_timestamp_and_serial():
     assert log_path == Path("logging/20260421_131415_Pack-01-02_el_cc_discharge.csv")
 
 
-def test_el_profile_loads_yaml_and_applies_run_protection_and_limit_defaults(tmp_path):
+def test_el_profile_loads_yaml_and_applies_stage_cutoff_only_when_explicit(tmp_path):
     example_module = load_example_module("el_profile.py", "el_profile_example")
     profile_path = tmp_path / "el_profile.yaml"
     profile_path.write_text(
@@ -37,9 +37,6 @@ def test_el_profile_loads_yaml_and_applies_run_protection_and_limit_defaults(tmp
                 "connection:",
                 "  transport: usb-scpi",
                 "  serial_port: /dev/ttyUSB0",
-                "run:",
-                "  default_cutoff_voltage_v: 26.4",
-                "  default_cutoff_confirm_samples: 4",
                 "protections:",
                 "  ovp_v: 35.0",
                 "  ocp_a: 20.0",
@@ -56,6 +53,8 @@ def test_el_profile_loads_yaml_and_applies_run_protection_and_limit_defaults(tmp
                 "    mode: cv",
                 "    setpoint: 28.0",
                 "    duration_s: 5.0",
+                "    cutoff_voltage_v: 26.4",
+                "    cutoff_confirm_samples: 4",
                 "  - name: recovery",
                 "    mode: off",
                 "    duration_s: 2.0",
@@ -69,14 +68,13 @@ def test_el_profile_loads_yaml_and_applies_run_protection_and_limit_defaults(tmp
     assert profile.connection.transport == "usb-scpi"
     assert profile.connection.serial_port == "/dev/ttyUSB0"
     assert profile.run.log_directory == Path("logging")
-    assert profile.run.default_cutoff_voltage_v == pytest.approx(26.4)
-    assert profile.run.default_cutoff_confirm_samples == 4
     assert profile.protections.ovp_v == pytest.approx(35.0)
     assert profile.protections.ocp_a == pytest.approx(20.0)
     assert profile.limits.current_max_a == pytest.approx(25.0)
     assert [stage.mode for stage in profile.stages] == ["cc", "cv", "off"]
-    assert profile.stages[0].cutoff_voltage_v == pytest.approx(26.4)
-    assert profile.stages[0].cutoff_confirm_samples == 4
+    assert profile.stages[0].cutoff_voltage_v is None
+    assert profile.stages[1].cutoff_voltage_v == pytest.approx(26.4)
+    assert profile.stages[1].cutoff_confirm_samples == 4
 
 
 def test_el_profile_rejects_unknown_stage_mode(tmp_path):
@@ -118,6 +116,31 @@ def test_el_profile_rejects_stage_outside_configured_limits(tmp_path):
     )
 
     with pytest.raises(SystemExit, match="allowed maximum"):
+        example_module.load_profile(profile_path)
+
+
+def test_el_profile_rejects_cutoff_above_voltage_limit_or_ovp(tmp_path):
+    example_module = load_example_module("el_profile.py", "el_profile_voltage_conflict")
+    profile_path = tmp_path / "el_profile.yaml"
+    profile_path.write_text(
+        "\n".join(
+            [
+                "protections:",
+                "  ovp_v: 25.5",
+                "limits:",
+                "  voltage_max_v: 25.2",
+                "stages:",
+                "  - name: takeoff_peak",
+                "    mode: cc",
+                "    setpoint: 50.0",
+                "    duration_s: 60.0",
+                "    cutoff_voltage_v: 26.4",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="Stage 'takeoff_peak' cutoff_voltage_v=26.4 exceeds the allowed maximum of 25.2"):
         example_module.load_profile(profile_path)
 
 

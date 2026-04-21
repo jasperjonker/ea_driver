@@ -73,8 +73,6 @@ DEFAULT_PROFILE = {
         "remote_settle_s": 0.3,
         "enable_settle_s": 0.5,
         "stage_settle_s": 0.3,
-        "default_cutoff_voltage_v": None,
-        "default_cutoff_confirm_samples": 3,
     },
     "protections": {},
     "limits": {},
@@ -88,8 +86,6 @@ class RunSettings:
     remote_settle_s: float = 0.3
     enable_settle_s: float = 0.5
     stage_settle_s: float = 0.3
-    default_cutoff_voltage_v: float | None = None
-    default_cutoff_confirm_samples: int = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,6 +205,7 @@ def normalize_profile(raw_profile: dict[str, object]) -> ProfileConfig:
     stages = [normalize_stage(stage_data, index=index, run_settings=run_settings, limits=limits) for index, stage_data in enumerate(stages_data, start=1)]
     if not stages:
         raise SystemExit("Profile must contain at least one stage.")
+    validate_profile_consistency(run_settings=run_settings, protections=protections, limits=limits, stages=stages)
 
     return ProfileConfig(
         connection=connection,
@@ -246,10 +243,6 @@ def normalize_run_settings(raw_run_settings: dict[str, object]) -> RunSettings:
         remote_settle_s=float(raw_run_settings.get("remote_settle_s", defaults["remote_settle_s"])),
         enable_settle_s=float(raw_run_settings.get("enable_settle_s", defaults["enable_settle_s"])),
         stage_settle_s=float(raw_run_settings.get("stage_settle_s", defaults["stage_settle_s"])),
-        default_cutoff_voltage_v=optional_float(raw_run_settings.get("default_cutoff_voltage_v")),
-        default_cutoff_confirm_samples=int(
-            raw_run_settings.get("default_cutoff_confirm_samples", defaults["default_cutoff_confirm_samples"])
-        ),
     )
     if run_settings.sample_interval_s <= 0.0:
         raise SystemExit("'run.sample_interval_s' must be greater than zero.")
@@ -259,11 +252,6 @@ def normalize_run_settings(raw_run_settings: dict[str, object]) -> RunSettings:
         raise SystemExit("'run.enable_settle_s' must be zero or greater.")
     if run_settings.stage_settle_s < 0.0:
         raise SystemExit("'run.stage_settle_s' must be zero or greater.")
-    if run_settings.default_cutoff_voltage_v is not None and run_settings.default_cutoff_voltage_v <= 0.0:
-        raise SystemExit("'run.default_cutoff_voltage_v' must be greater than zero.")
-    if run_settings.default_cutoff_confirm_samples < 1:
-        raise SystemExit("'run.default_cutoff_confirm_samples' must be at least 1.")
-    validate_not_above("run.default_cutoff_voltage_v", run_settings.default_cutoff_voltage_v, DEVICE_RATINGS.voltage_v)
     return run_settings
 
 
@@ -329,11 +317,8 @@ def normalize_stage(
 
     setpoint = optional_float(raw_stage.get("setpoint"))
     duration_s = optional_float(raw_stage.get("duration_s"))
-    if "cutoff_voltage_v" in raw_stage:
-        cutoff_voltage_v = optional_float(raw_stage.get("cutoff_voltage_v"))
-    else:
-        cutoff_voltage_v = run_settings.default_cutoff_voltage_v
-    cutoff_confirm_samples = int(raw_stage.get("cutoff_confirm_samples", run_settings.default_cutoff_confirm_samples))
+    cutoff_voltage_v = optional_float(raw_stage.get("cutoff_voltage_v"))
+    cutoff_confirm_samples = int(raw_stage.get("cutoff_confirm_samples", 3))
 
     if mode == "off":
         if setpoint is not None:
@@ -400,6 +385,22 @@ def validate_stage_against_limits(
         validate_not_below(f"Stage {name!r} resistance setpoint", setpoint, DEVICE_RATINGS.resistance_ohm_min)
         validate_not_above(f"Stage {name!r} resistance setpoint", setpoint, DEVICE_RATINGS.resistance_ohm_max)
         validate_not_above(f"Stage {name!r} resistance setpoint", setpoint, limits.resistance_max_ohm)
+
+
+def validate_profile_consistency(
+    *,
+    run_settings: RunSettings,
+    protections: ProtectionSettings,
+    limits: AdjustmentLimits,
+    stages: list[ProfileStage],
+) -> None:
+    for stage in stages:
+        if stage.mode == "cv":
+            validate_not_above(f"Stage {stage.name!r} voltage setpoint", stage.setpoint, protections.ovp_v)
+
+        if stage.mode in {"cc", "cp", "cr"}:
+            validate_not_above(f"Stage {stage.name!r} cutoff_voltage_v", stage.cutoff_voltage_v, limits.voltage_max_v)
+            validate_not_above(f"Stage {stage.name!r} cutoff_voltage_v", stage.cutoff_voltage_v, protections.ovp_v)
 
 
 def validate_positive_or_none(name: str, value: float | None) -> None:
@@ -689,6 +690,12 @@ def run_profile(config: ProfileConfig, battery_serial: str) -> Path:
 
         with device:
             log_device_connection(device)
+            preflight_measurement = device.read_measurements() if hasattr(device, "read_measurements") else device.measure_all()
+            if config.protections.ovp_v is not None and preflight_measurement.voltage_v >= config.protections.ovp_v:
+                raise RuntimeError(
+                    f"Measured battery voltage {preflight_measurement.voltage_v:.3f} V is already at or above "
+                    f"configured OVP {config.protections.ovp_v:.3f} V. Raise OVP or lower the pack voltage first."
+                )
 
             start_monotonic = time.monotonic()
             last_sample_monotonic: float | None = None
