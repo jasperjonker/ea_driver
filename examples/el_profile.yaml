@@ -1,0 +1,68 @@
+# Edit this file, then run:
+#   uv run python examples/el_profile.py
+#
+# Stages are defined only here, not in the Python file.
+#
+# Supported stage modes:
+# - off: input disabled
+# - cv: constant voltage, `setpoint` in V
+# - cc: constant current, `setpoint` in A
+# - cp: constant power, `setpoint` in W
+# - cr: constant resistance, `setpoint` in Ohm
+#
+# A stage stops when either:
+# - `duration_s` is reached
+# - `cutoff_voltage_v` is reached for `cutoff_confirm_samples` samples
+# If a stage omits `cutoff_voltage_v`, the runner uses `run.default_cutoff_voltage_v`.
+#
+# `protections` configures device OVP/OCP/OPP thresholds.
+# `limits` configures the device "Limits" menu: U-Min, U-Max, I-Min, I-Max, P-Max, R-Max.
+# Set fields to `null` to leave them unchanged / unused.
+
+connection:
+  transport: usb-modbus
+  serial_port: /dev/ttyACM0
+  serial_glob: null
+  host: 192.168.0.42
+  lan_scpi_port: 5025
+  baudrate: 115200
+  unit_id: 0
+  timeout_s: 1.0
+
+run:
+  log_directory: logging
+  sample_interval_s: 1.0
+  remote_settle_s: 0.3
+  enable_settle_s: 0.5
+  stage_settle_s: 0.3
+  default_cutoff_voltage_v: 26.4
+  default_cutoff_confirm_samples: 3
+
+protections:
+  ovp_v: 35.0
+  ocp_a: 55.0
+  opp_w: 1100.0
+
+limits:
+  voltage_min_v: null
+  voltage_max_v: 35.2
+  current_min_a: null
+  current_max_a: 30.0
+  power_max_w: 1000.0
+  resistance_max_ohm: null
+
+stages:
+  - name: warmup_cc_5a
+    mode: cc
+    setpoint: 5.0
+    duration_s: 10.0
+
+  - name: recovery
+    mode: "off"
+    duration_s: 10.0
+
+  - name: power_hold_to_cutoff
+    mode: cp
+    setpoint: 300.0
+    duration_s: 10.0
+    # cutoff_voltage_v: 26.4

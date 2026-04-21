@@ -80,50 +80,53 @@ the device's TCP timeout / keep-alive settings appropriately on the instrument.
 
 ### Example Scripts
 
-The repository includes two plain Python example files:
+The repository includes three plain Python example files:
 
 - `examples/el_complete.py`
+- `examples/el_profile.py`
 - `examples/psb_complete.py`
 
 These are intended to be run after `uv sync` or `pip install -e .`, so they import the installed
 package directly with `from ea_driver import ...`.
 
-Both examples now accept connection overrides on the command line and can auto-discover
-the serial port from `/dev/serial/by-id`, `/dev/ttyACM*`, and `/dev/ttyUSB*`.
-They also read `EA_DRIVER_*` environment variables, plus script-specific prefixes such as
-`EA_EL_EXAMPLE_*` and `EA_PSB_EXAMPLE_*`.
+The two EL examples are fixed-configuration scripts on purpose: you edit either the constants
+inside the Python file or the sibling YAML profile instead of using `argparse`. Both EL scripts
+prompt for the battery serial number before they touch the device and write timestamped CSV logs
+to `logging/`.
 
-### EL Example
+### EL Examples
 
-The EL example script in `examples/el_complete.py` supports:
-
-- USB Modbus RTU for Kelvin-aware runs with `remote_sensing` status checks
-- USB SCPI
-- Ethernet SCPI
-- `CC`, `CP`, and `CR` setpoint modes
-
-By default it is configured for USB Modbus RTU with a 4-wire / Kelvin check and a `1 A`
-constant-current run. Run it with:
+`examples/el_complete.py` is the smallest EL example. It performs a constant-current discharge
+at a fixed current until the measured battery voltage falls below the configured cutoff voltage
+for a few consecutive samples.
 
 ```bash
 uv sync
 uv run python examples/el_complete.py
 ```
 
-To run the same example over Ethernet instead:
+Edit the constants at the top of the file if you want a different current, cutoff voltage,
+sample interval, or transport (`usb-modbus`, `usb-scpi`, or `lan-scpi`).
+
+`examples/el_profile.py` is the more advanced EL example. It auto-loads the editable sibling
+file `examples/el_profile.yaml` and runs the listed stages in sequence while logging every sample.
+The stage sequence is defined only in the YAML file, not duplicated in Python.
+Supported stage modes are `off`, `cv`, `cc`, `cp`, and `cr`, and each stage can stop on
+`duration_s` and/or `cutoff_voltage_v`.
 
 ```bash
-uv run python examples/el_complete.py --transport lan-scpi --host 192.168.0.42
+uv run python examples/el_profile.py
 ```
 
-To inspect the effective configuration without opening the device:
+This is intended for battery discharge profiles where you want to keep the connection settings,
+device protections, device adjustment limits, and stage sequence in YAML instead of editing
+Python code for every run.
 
-```bash
-uv run python examples/el_complete.py --print-config
-```
+The YAML file now has distinct sections for:
 
-For `lan-scpi`, the library can control and measure the load, but the explicit `remote_sensing`
-/ Kelvin status bit is currently exposed through the Modbus path only.
+- `protections`: EL `OVP`, `OCP`, and `OPP`
+- `limits`: device adjustment limits such as `U-Min`, `U-Max`, `I-Min`, `I-Max`, `P-Max`, and `R-Max`
+- `stages`: the actual test sequence
 
 ### PSB Example
 

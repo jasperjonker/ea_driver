@@ -20,7 +20,7 @@ connection_config:
 
 battery_config:
   series_cells: 6
-  cutoff_per_cell_v: 3.3
+  cutoff_per_cell_v: 2.5
   max_per_cell_v: 4.2
   discharge_cutoff_confirm_samples: 3
   charge_termination_confirm_samples: 5

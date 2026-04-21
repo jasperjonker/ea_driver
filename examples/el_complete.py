@@ -1,241 +1,222 @@
 from __future__ import annotations
 
 """
-Simple EA-EL 9080-60 DT example.
+Very simple EA-EL 9080-60 DT discharge example.
 
-How to run:
+Edit the constants below, then run:
 
     uv sync
     uv run python examples/el_complete.py
 
-You can override the connection and the test profile on the command line instead
-of editing this file, for example:
-
-    uv run python examples/el_complete.py --transport lan-scpi --host 192.168.0.42
-
-Connection defaults can also come from `EA_EL_EXAMPLE_*` or `EA_DRIVER_*`
-environment variables, such as `EA_DRIVER_SERIAL_PORT` or `EA_EL_EXAMPLE_HOST`.
-Use `--print-config` to inspect the merged configuration without talking to the device.
+The script asks for the battery serial number before it starts, performs a
+constant-current discharge, and writes a CSV log to `logging/`.
 """
 
-import argparse
 import csv
-import json
 import logging
 import time
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from ea_driver import EAEL9080_60DT
-from ea_driver.config import (
-    ConnectionSettings,
-    add_connection_arguments,
-    build_device_connection,
-    format_connection,
-    resolve_connection_settings,
-)
+from ea_driver.config import ConnectionSettings, build_device_connection, format_connection
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 LOGGER = logging.getLogger("ea_driver.examples.el_complete")
-ENV_PREFIXES = ("EA_EL_EXAMPLE", "EA_DRIVER")
+
+CSV_FIELDS = [
+    "timestamp",
+    "battery_serial",
+    "sample_index",
+    "elapsed_s",
+    "command_mode",
+    "command_value",
+    "cutoff_voltage_v",
+    "below_cutoff_samples",
+    "stop_reason",
+    "voltage_v",
+    "current_a",
+    "power_w",
+    "discharged_ah",
+    "discharged_wh",
+    "input_enabled",
+    "remote_sensing",
+    "alarms_active",
+]
 
 
 @dataclass(frozen=True, slots=True)
-class ELExampleConfig:
+class SimpleDischargeConfig:
     connection: ConnectionSettings
-    mode: str = "cc"
-    setpoint: float = 1.0
-    samples: int = 20
-    interval_s: float = 0.5
+    current_a: float = 5.0
+    cutoff_voltage_v: float = 18.0
+    sample_interval_s: float = 1.0
     remote_settle_s: float = 0.3
     enable_settle_s: float = 0.5
-    require_remote_sensing: bool = True
-    csv_path: Path = Path("el_samples.csv")
+    cutoff_confirm_samples: int = 3
+    log_directory: Path = Path("logging")
 
 
-DEFAULT_CONNECTION = ConnectionSettings(
-    transport="usb-modbus",
-    serial_glob="*EL_9080-60_DT*",
-    host="192.168.0.42",
-    lan_scpi_port=5025,
-    baudrate=115200,
-    unit_id=0,
-    timeout_s=1.0,
+DEFAULT_CONFIG = SimpleDischargeConfig(
+    connection=ConnectionSettings(
+        transport="usb-modbus",
+        serial_glob="*EL_9080-60_DT*",
+        host="192.168.0.42",
+        lan_scpi_port=5025,
+        baudrate=115200,
+        unit_id=0,
+        timeout_s=1.0,
+    )
 )
-DEFAULT_CONFIG = ELExampleConfig(connection=DEFAULT_CONNECTION)
 
 
 def configure_logging() -> None:
     logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a short EA-EL 9080-60 DT example.")
-    add_connection_arguments(parser, transport_choices=("usb-modbus", "usb-scpi", "lan-scpi"))
-    parser.add_argument("--mode", choices=("cc", "cp", "cr"), default=DEFAULT_CONFIG.mode)
-    parser.add_argument("--setpoint", type=float, default=DEFAULT_CONFIG.setpoint)
-    parser.add_argument("--samples", type=int, default=DEFAULT_CONFIG.samples)
-    parser.add_argument("--interval-s", type=float, default=DEFAULT_CONFIG.interval_s)
-    parser.add_argument("--remote-settle-s", type=float, default=DEFAULT_CONFIG.remote_settle_s)
-    parser.add_argument("--enable-settle-s", type=float, default=DEFAULT_CONFIG.enable_settle_s)
-    parser.add_argument(
-        "--require-remote-sensing",
-        action=argparse.BooleanOptionalAction,
-        default=DEFAULT_CONFIG.require_remote_sensing,
-        help="Require the Kelvin / remote-sensing status bit when running through Modbus.",
-    )
-    parser.add_argument("--csv-path", type=Path, default=DEFAULT_CONFIG.csv_path)
-    parser.add_argument(
-        "--print-config",
-        action="store_true",
-        help="Print the merged configuration and exit without touching the device.",
-    )
-    return parser
+def prompt_battery_serial() -> str:
+    while True:
+        battery_serial = input("Battery serial number: ").strip()
+        if battery_serial:
+            return battery_serial
+        print("Please enter a non-empty battery serial number.")
 
 
-def load_config(argv: list[str] | None = None) -> tuple[ELExampleConfig, bool]:
-    args = build_parser().parse_args(argv)
-    connection = resolve_connection_settings(
-        defaults=DEFAULT_CONNECTION,
-        args=args,
-        env_prefixes=ENV_PREFIXES,
-    )
-    config = ELExampleConfig(
-        connection=connection,
-        mode=args.mode,
-        setpoint=args.setpoint,
-        samples=args.samples,
-        interval_s=args.interval_s,
-        remote_settle_s=args.remote_settle_s,
-        enable_settle_s=args.enable_settle_s,
-        require_remote_sensing=args.require_remote_sensing,
-        csv_path=args.csv_path,
-    )
-    return config, args.print_config
+def sanitize_filename_component(value: str) -> str:
+    cleaned = "".join(character if character.isalnum() or character in "-_." else "-" for character in value.strip())
+    return cleaned.strip("-_.") or "unknown-battery"
 
 
-def build_device(config: ELExampleConfig):
+def build_log_path(config: SimpleDischargeConfig, battery_serial: str, now: datetime | None = None) -> Path:
+    timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    safe_serial = sanitize_filename_component(battery_serial)
+    return config.log_directory / f"{timestamp}_{safe_serial}_el_cc_discharge.csv"
+
+
+def timestamp_now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def build_device(config: SimpleDischargeConfig):
     return build_device_connection(EAEL9080_60DT, config.connection)
 
 
-def apply_mode(device, config: ELExampleConfig) -> None:
-    if config.mode == "cc":
-        device.set_current(config.setpoint)
+def read_measurement_and_status(device):
+    is_modbus = hasattr(device, "read_status")
+    measurement = device.read_measurements() if is_modbus else device.measure_all()
+    status = device.read_status() if is_modbus else None
+    input_enabled = status.dc_on if status else device.is_input_enabled()
+    return measurement, status, input_enabled
+
+
+def log_device_connection(device) -> None:
+    if hasattr(device, "read_status"):
+        LOGGER.info("Nominals: %s", device.read_nominals())
+        initial_status = device.read_status()
+        LOGGER.info("Initial status: %s", initial_status)
+        if not initial_status.remote_sensing:
+            LOGGER.warning("Kelvin / remote sensing is not active on the EL.")
         return
-    if config.mode == "cp":
-        device.set_power(config.setpoint)
-        return
-    if config.mode == "cr":
-        device.set_resistance(config.setpoint)
-        return
-    raise ValueError(f"Unsupported EL mode: {config.mode}")
+
+    LOGGER.info("Connected to %s", device.identify())
+    device.clear_status()
 
 
-def timestamp_utc() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def run(config: SimpleDischargeConfig, battery_serial: str) -> Path:
+    log_path = build_log_path(config, battery_serial)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
-
-def run(config: ELExampleConfig) -> None:
     device = build_device(config)
-    config.csv_path.parent.mkdir(parents=True, exist_ok=True)
     LOGGER.info("Using %s", format_connection(config.connection))
+    LOGGER.info("Battery serial: %s", battery_serial)
 
-    with config.csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(
-            handle,
-            fieldnames=[
-                "timestamp_utc",
-                "transport",
-                "sample_index",
-                "mode",
-                "setpoint",
-                "voltage_v",
-                "current_a",
-                "power_w",
-                "dc_on",
-                "remote",
-                "regulation_mode",
-                "remote_sensing",
-                "alarms_active",
-            ],
-        )
+    with log_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         writer.writeheader()
 
         with device:
-            is_modbus = hasattr(device, "read_status")
-            if is_modbus:
-                LOGGER.info("Nominals: %s", device.read_nominals())
-                LOGGER.info("Protection thresholds: %s", device.read_protection_thresholds())
-                initial_status = device.read_status()
-                LOGGER.info("Initial status: %s", initial_status)
-                if config.require_remote_sensing and not initial_status.remote_sensing:
-                    raise RuntimeError("Kelvin / remote sensing is not active on the load")
-                if not initial_status.remote_sensing:
-                    LOGGER.warning(
-                        "Kelvin / remote sensing is not active on the load. Enable 4-wire sensing on the instrument first."
-                    )
-            else:
-                LOGGER.info("Connected to %s", device.identify())
-                device.clear_status()
-                if config.require_remote_sensing:
-                    LOGGER.warning(
-                        "SCPI control works over USB and Ethernet, but the explicit Kelvin / remote-sensing status bit "
-                        "is currently only exposed through the Modbus path."
-                    )
+            log_device_connection(device)
+
+            start_monotonic = time.monotonic()
+            last_sample_monotonic: float | None = None
+            discharged_ah = 0.0
+            discharged_wh = 0.0
+            min_voltage_v = float("inf")
 
             try:
                 device.set_remote(True)
                 time.sleep(config.remote_settle_s)
 
-                apply_mode(device, config)
+                device.set_current(config.current_a)
                 device.set_input_enabled(True)
                 time.sleep(config.enable_settle_s)
 
-                for sample_index in range(1, config.samples + 1):
-                    measurement = device.read_measurements() if is_modbus else device.measure_all()
-                    status = device.read_status() if is_modbus else None
+                sample_index = 0
+                below_cutoff_samples = 0
+
+                while True:
+                    sample_index += 1
+                    measurement, status, input_enabled = read_measurement_and_status(device)
+                    sample_monotonic = time.monotonic()
+                    elapsed_s = sample_monotonic - start_monotonic
+
+                    if last_sample_monotonic is not None:
+                        dt_s = sample_monotonic - last_sample_monotonic
+                        if input_enabled:
+                            discharged_ah += max(measurement.current_a, 0.0) * dt_s / 3600.0
+                            discharged_wh += max(measurement.power_w, 0.0) * dt_s / 3600.0
+                    last_sample_monotonic = sample_monotonic
+
+                    min_voltage_v = min(min_voltage_v, measurement.voltage_v)
+                    if measurement.voltage_v <= config.cutoff_voltage_v:
+                        below_cutoff_samples += 1
+                    else:
+                        below_cutoff_samples = 0
+
+                    stop_reason = ""
+                    if below_cutoff_samples >= config.cutoff_confirm_samples:
+                        stop_reason = (
+                            f"voltage <= {config.cutoff_voltage_v:.3f} V "
+                            f"for {config.cutoff_confirm_samples} samples"
+                        )
+
                     writer.writerow(
                         {
-                            "timestamp_utc": timestamp_utc(),
-                            "transport": config.connection.transport,
+                            "timestamp": timestamp_now(),
+                            "battery_serial": battery_serial,
                             "sample_index": sample_index,
-                            "mode": config.mode,
-                            "setpoint": config.setpoint,
+                            "elapsed_s": f"{elapsed_s:.3f}",
+                            "command_mode": "cc",
+                            "command_value": config.current_a,
+                            "cutoff_voltage_v": config.cutoff_voltage_v,
+                            "below_cutoff_samples": below_cutoff_samples,
+                            "stop_reason": stop_reason,
                             "voltage_v": measurement.voltage_v,
                             "current_a": measurement.current_a,
                             "power_w": measurement.power_w,
-                            "dc_on": status.dc_on if status else device.is_input_enabled(),
-                            "remote": status.remote if status else "",
-                            "regulation_mode": status.regulation_mode if status else "",
+                            "discharged_ah": discharged_ah,
+                            "discharged_wh": discharged_wh,
+                            "input_enabled": input_enabled,
                             "remote_sensing": status.remote_sensing if status else "",
                             "alarms_active": status.alarms_active if status else "",
                         }
                     )
-                    if status is None:
-                        LOGGER.info(
-                            "Sample %d/%d: %.3f V, %.3f A, %.3f W, input_enabled=%s",
-                            sample_index,
-                            config.samples,
-                            measurement.voltage_v,
-                            measurement.current_a,
-                            measurement.power_w,
-                            device.is_input_enabled(),
-                        )
-                    else:
-                        LOGGER.info(
-                            "Sample %d/%d: %.3f V, %.3f A, %.3f W, mode=%s, kelvin=%s, alarms=%s",
-                            sample_index,
-                            config.samples,
-                            measurement.voltage_v,
-                            measurement.current_a,
-                            measurement.power_w,
-                            status.regulation_mode,
-                            status.remote_sensing,
-                            status.alarms_active,
-                        )
-                    if sample_index < config.samples:
-                        time.sleep(config.interval_s)
+                    handle.flush()
+
+                    LOGGER.info(
+                        "Sample %d: %.3f V, %.3f A, %.3f W",
+                        sample_index,
+                        measurement.voltage_v,
+                        measurement.current_a,
+                        measurement.power_w,
+                    )
+
+                    if stop_reason:
+                        LOGGER.info("Stopping discharge: %s", stop_reason)
+                        break
+
+                    time.sleep(config.sample_interval_s)
             finally:
                 try:
                     device.set_input_enabled(False)
@@ -250,17 +231,27 @@ def run(config: ELExampleConfig) -> None:
                     if errors and any(not error.startswith("0,") for error in errors):
                         LOGGER.warning("SCPI error queue: %s", errors)
 
-    LOGGER.info("Wrote CSV log to %s", config.csv_path)
+    lowest_voltage = "n/a" if min_voltage_v == float("inf") else f"{min_voltage_v:.3f} V"
+    total_elapsed_s = time.monotonic() - start_monotonic
+    LOGGER.info(
+        "Finished after %.1f s. Lowest voltage: %s. Discharged %.4f Ah / %.4f Wh.",
+        total_elapsed_s,
+        lowest_voltage,
+        discharged_ah,
+        discharged_wh,
+    )
+    LOGGER.info("Wrote CSV log to %s", log_path)
+    return log_path
 
 
-def main(argv: list[str] | None = None) -> None:
+def main() -> None:
     configure_logging()
-    config, print_config = load_config(argv)
-    if print_config:
-        print(json.dumps(asdict(config), indent=2, sort_keys=True, default=str))
-        return
-    run(config)
+    battery_serial = prompt_battery_serial()
+    run(DEFAULT_CONFIG, battery_serial)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        LOGGER.info("Stopped by user.")

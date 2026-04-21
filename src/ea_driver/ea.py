@@ -194,6 +194,42 @@ class EASCPIBase(SCPIDevice):
     def get_source_power_protection(self) -> float:
         return _parse_scpi_numeric(self.query("POW:PROT?"))
 
+    def set_voltage_limit_low(self, volts: float) -> None:
+        self.write(f"VOLT:LIM:LOW {volts}")
+
+    def get_voltage_limit_low(self) -> float:
+        return _parse_scpi_numeric(self.query("VOLT:LIM:LOW?"))
+
+    def set_voltage_limit_high(self, volts: float) -> None:
+        self.write(f"VOLT:LIM:HIGH {volts}")
+
+    def get_voltage_limit_high(self) -> float:
+        return _parse_scpi_numeric(self.query("VOLT:LIM:HIGH?"))
+
+    def set_current_limit_low(self, amps: float) -> None:
+        self.write(f"CURR:LIM:LOW {amps}")
+
+    def get_current_limit_low(self) -> float:
+        return _parse_scpi_numeric(self.query("CURR:LIM:LOW?"))
+
+    def set_current_limit_high(self, amps: float) -> None:
+        self.write(f"CURR:LIM:HIGH {amps}")
+
+    def get_current_limit_high(self) -> float:
+        return _parse_scpi_numeric(self.query("CURR:LIM:HIGH?"))
+
+    def set_power_limit_high(self, watts: float) -> None:
+        self.write(f"POW:LIM:HIGH {watts}")
+
+    def get_power_limit_high(self) -> float:
+        return _parse_scpi_numeric(self.query("POW:LIM:HIGH?"))
+
+    def set_resistance_limit_high(self, ohms: float) -> None:
+        self.write(f"RES:LIM:HIGH {_normalize_resistance_value(ohms, self.ratings)}")
+
+    def get_resistance_limit_high(self) -> float:
+        return _parse_scpi_numeric(self.query("RES:LIM:HIGH?"))
+
     def set_source_resistance(self, ohms: float) -> None:
         self.write(f"RES {_normalize_resistance_value(ohms, self.ratings)}")
 
@@ -535,6 +571,12 @@ class EAModbusBase:
     REG_OVP = 550
     REG_OCP = 553
     REG_OPP = 556
+    REG_LIMIT_VOLTAGE_HIGH = 9000
+    REG_LIMIT_VOLTAGE_LOW = 9001
+    REG_LIMIT_CURRENT_HIGH = 9002
+    REG_LIMIT_CURRENT_LOW = 9003
+    REG_LIMIT_POWER_HIGH = 9004
+    REG_LIMIT_RESISTANCE_HIGH = 9005
 
     def __init__(self, client: ModbusTCPClient | ModbusRTUClient, ratings: DeviceRatings) -> None:
         self.client = client
@@ -577,10 +619,149 @@ class EAModbusBase:
     def set_source_resistance(self, ohms: float) -> None:
         self.set_resistance(ohms)
 
+    def set_source_voltage_protection(self, volts: float) -> None:
+        self.client.write_single_register(
+            self.REG_OVP,
+            _value_to_raw(volts, self.ratings.voltage_v, 1.10, EA_PROTECTION_FULL_SCALE),
+        )
+
+    def get_source_voltage_protection(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_OVP, 1)[0],
+            self.ratings.voltage_v,
+            1.10,
+            EA_PROTECTION_FULL_SCALE,
+        )
+
+    def set_source_current_protection(self, amps: float) -> None:
+        self.client.write_single_register(
+            self.REG_OCP,
+            _value_to_raw(amps, self.ratings.current_a, 1.10, EA_PROTECTION_FULL_SCALE),
+        )
+
+    def get_source_current_protection(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_OCP, 1)[0],
+            self.ratings.current_a,
+            1.10,
+            EA_PROTECTION_FULL_SCALE,
+        )
+
+    def set_source_power_protection(self, watts: float) -> None:
+        self.client.write_single_register(
+            self.REG_OPP,
+            _value_to_raw(watts, self.ratings.power_w, 1.10, EA_PROTECTION_FULL_SCALE),
+        )
+
+    def get_source_power_protection(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_OPP, 1)[0],
+            self.ratings.power_w,
+            1.10,
+            EA_PROTECTION_FULL_SCALE,
+        )
+
+    def set_voltage_limit_low(self, volts: float) -> None:
+        self.client.write_single_register(
+            self.REG_LIMIT_VOLTAGE_LOW,
+            _value_to_raw(volts, self.ratings.voltage_v, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_voltage_limit_low(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_LIMIT_VOLTAGE_LOW, 1)[0],
+            self.ratings.voltage_v,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
+        )
+
+    def set_voltage_limit_high(self, volts: float) -> None:
+        self.client.write_single_register(
+            self.REG_LIMIT_VOLTAGE_HIGH,
+            _value_to_raw(volts, self.ratings.voltage_v, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_voltage_limit_high(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_LIMIT_VOLTAGE_HIGH, 1)[0],
+            self.ratings.voltage_v,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
+        )
+
+    def set_current_limit_low(self, amps: float) -> None:
+        self.client.write_single_register(
+            self.REG_LIMIT_CURRENT_LOW,
+            _value_to_raw(amps, self.ratings.current_a, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_current_limit_low(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_LIMIT_CURRENT_LOW, 1)[0],
+            self.ratings.current_a,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
+        )
+
+    def set_current_limit_high(self, amps: float) -> None:
+        self.client.write_single_register(
+            self.REG_LIMIT_CURRENT_HIGH,
+            _value_to_raw(amps, self.ratings.current_a, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_current_limit_high(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_LIMIT_CURRENT_HIGH, 1)[0],
+            self.ratings.current_a,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
+        )
+
+    def set_power_limit_high(self, watts: float) -> None:
+        self.client.write_single_register(
+            self.REG_LIMIT_POWER_HIGH,
+            _value_to_raw(watts, self.ratings.power_w, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_power_limit_high(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_LIMIT_POWER_HIGH, 1)[0],
+            self.ratings.power_w,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
+        )
+
+    def set_resistance_limit_high(self, ohms: float) -> None:
+        if self.ratings.resistance_ohm_max is None:
+            raise ValueError("Resistance rating unknown for this model")
+        normalized = _normalize_resistance_value(ohms, self.ratings)
+        self.client.write_single_register(
+            self.REG_LIMIT_RESISTANCE_HIGH,
+            _value_to_raw(normalized, self.ratings.resistance_ohm_max, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_resistance_limit_high(self) -> float:
+        if self.ratings.resistance_ohm_max is None:
+            raise ValueError("Resistance rating unknown for this model")
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_LIMIT_RESISTANCE_HIGH, 1)[0],
+            self.ratings.resistance_ohm_max,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
+        )
+
     def set_voltage(self, volts: float) -> None:
         self.client.write_single_register(
             self.REG_SET_VOLTAGE,
             _value_to_raw(volts, self.ratings.voltage_v, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_voltage_setpoint(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_SET_VOLTAGE, 1)[0],
+            self.ratings.voltage_v,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
         )
 
     def set_current(self, amps: float) -> None:
@@ -589,10 +770,26 @@ class EAModbusBase:
             _value_to_raw(amps, self.ratings.current_a, 1.02, EA_SET_VALUE_FULL_SCALE),
         )
 
+    def get_source_current_setpoint(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_SET_CURRENT, 1)[0],
+            self.ratings.current_a,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
+        )
+
     def set_power(self, watts: float) -> None:
         self.client.write_single_register(
             self.REG_SET_POWER,
             _value_to_raw(watts, self.ratings.power_w, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_source_power_setpoint(self) -> float:
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_SET_POWER, 1)[0],
+            self.ratings.power_w,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
         )
 
     def set_resistance(self, ohms: float) -> None:
@@ -602,6 +799,16 @@ class EAModbusBase:
         self.client.write_single_register(
             self.REG_SET_RESISTANCE,
             _value_to_raw(normalized, self.ratings.resistance_ohm_max, 1.02, EA_SET_VALUE_FULL_SCALE),
+        )
+
+    def get_source_resistance_setpoint(self) -> float:
+        if self.ratings.resistance_ohm_max is None:
+            raise ValueError("Resistance rating unknown for this model")
+        return _raw_to_value(
+            self.client.read_holding_registers(self.REG_SET_RESISTANCE, 1)[0],
+            self.ratings.resistance_ohm_max,
+            1.02,
+            EA_SET_VALUE_FULL_SCALE,
         )
 
     def read_measurements(self) -> Measurement:

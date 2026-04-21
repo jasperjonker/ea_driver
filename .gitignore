@@ -8,3 +8,4 @@ dist/
 build/
 src/ea_driver/_version.py
 logs/
+logging/
