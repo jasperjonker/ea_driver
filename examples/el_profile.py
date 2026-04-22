@@ -14,15 +14,18 @@ log to `logging/` while the profile is running.
 
 import csv
 import logging
+import socket
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 import yaml
 
 from ea_driver import EAEL9080_60DT
 from ea_driver.config import ConnectionSettings, build_device_connection, deep_merge_dicts, format_connection
+from ea_driver.ea import EA_SET_VALUE_FULL_SCALE
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 LOGGER = logging.getLogger("ea_driver.examples.el_profile")
@@ -30,6 +33,8 @@ DEFAULT_PROFILE_PATH = Path(__file__).with_suffix(".yaml")
 ALLOWED_TRANSPORTS = {"usb-modbus", "usb-scpi", "lan-scpi"}
 ALLOWED_STAGE_MODES = {"off", "cv", "cc", "cp", "cr"}
 DEVICE_RATINGS = EAEL9080_60DT.RATINGS
+_CONSOLE_HANDLER: logging.Handler | None = None
+_FILE_HANDLER: logging.Handler | None = None
 
 CSV_FIELDS = [
     "timestamp",
@@ -116,6 +121,14 @@ class ProfileStage:
 
 
 @dataclass(frozen=True, slots=True)
+class StageSetpoints:
+    voltage_v: float | None = None
+    current_a: float | None = None
+    power_w: float | None = None
+    resistance_ohm: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileConfig:
     connection: ConnectionSettings
     run: RunSettings
@@ -125,7 +138,44 @@ class ProfileConfig:
 
 
 def configure_logging() -> None:
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    configure_logging_handlers()
+
+
+def configure_logging_handlers(log_file_path: Path | None = None) -> None:
+    global _CONSOLE_HANDLER, _FILE_HANDLER
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    if _CONSOLE_HANDLER is None:
+        _CONSOLE_HANDLER = logging.StreamHandler()
+        _CONSOLE_HANDLER.setLevel(logging.WARNING)
+        _CONSOLE_HANDLER.setFormatter(logging.Formatter(LOG_FORMAT))
+        root_logger.addHandler(_CONSOLE_HANDLER)
+    elif _CONSOLE_HANDLER not in root_logger.handlers:
+        root_logger.addHandler(_CONSOLE_HANDLER)
+
+    if log_file_path is None:
+        return
+
+    resolved_path = log_file_path.resolve()
+    current_path = None
+    if isinstance(_FILE_HANDLER, logging.FileHandler):
+        current_path = Path(_FILE_HANDLER.baseFilename)
+    if current_path == resolved_path:
+        if _FILE_HANDLER not in root_logger.handlers:
+            root_logger.addHandler(_FILE_HANDLER)
+        return
+
+    if _FILE_HANDLER is not None:
+        root_logger.removeHandler(_FILE_HANDLER)
+        _FILE_HANDLER.close()
+
+    file_handler = logging.FileHandler(resolved_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    root_logger.addHandler(file_handler)
+    _FILE_HANDLER = file_handler
 
 
 def prompt_battery_serial() -> str:
@@ -147,8 +197,92 @@ def build_log_path(run_settings: RunSettings, battery_serial: str, now: datetime
     return run_settings.log_directory / f"{timestamp}_{safe_serial}_el_profile.csv"
 
 
-def timestamp_now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+def build_text_log_path(csv_log_path: Path) -> Path:
+    return csv_log_path.with_suffix(".log")
+
+
+def serialize_profile_for_log(config: ProfileConfig) -> dict[str, object]:
+    return {
+        "connection": {
+            "transport": config.connection.transport,
+            "serial_port": config.connection.serial_port,
+            "serial_glob": config.connection.serial_glob,
+            "host": config.connection.host,
+            "lan_scpi_port": config.connection.lan_scpi_port,
+            "baudrate": config.connection.baudrate,
+            "unit_id": config.connection.unit_id,
+            "timeout_s": config.connection.timeout_s,
+        },
+        "run": {
+            "log_directory": str(config.run.log_directory),
+            "sample_interval_s": config.run.sample_interval_s,
+            "remote_settle_s": config.run.remote_settle_s,
+            "enable_settle_s": config.run.enable_settle_s,
+            "stage_settle_s": config.run.stage_settle_s,
+        },
+        "protections": {
+            "ovp_v": config.protections.ovp_v,
+            "ocp_a": config.protections.ocp_a,
+            "opp_w": config.protections.opp_w,
+        },
+        "limits": {
+            "voltage_min_v": config.limits.voltage_min_v,
+            "voltage_max_v": config.limits.voltage_max_v,
+            "current_min_a": config.limits.current_min_a,
+            "current_max_a": config.limits.current_max_a,
+            "power_max_w": config.limits.power_max_w,
+            "resistance_max_ohm": config.limits.resistance_max_ohm,
+        },
+        "stages": [
+            {
+                "name": stage.name,
+                "mode": stage.mode,
+                "setpoint": stage.setpoint,
+                "duration_s": stage.duration_s,
+                "cutoff_voltage_v": stage.cutoff_voltage_v,
+                "cutoff_confirm_samples": stage.cutoff_confirm_samples,
+            }
+            for stage in config.stages
+        ],
+    }
+
+
+def build_csv_metadata_lines(
+    *,
+    config: ProfileConfig,
+    battery_serial: str,
+    profile_path: Path,
+    started_at: datetime,
+    hostname: str | None = None,
+) -> list[str]:
+    lines = [
+        f"# host: {hostname or socket.gethostname()}",
+        f"# started_at: {started_at.isoformat(timespec='seconds')}",
+        f"# profile_path: {profile_path.resolve()}",
+        f"# battery_serial: {battery_serial}",
+        "# timestamp_column: seconds since run start (time.monotonic)",
+        "# profile:",
+    ]
+    profile_yaml = yaml.safe_dump(serialize_profile_for_log(config), sort_keys=False).rstrip()
+    lines.extend(f"#   {line}" for line in profile_yaml.splitlines())
+    return lines
+
+
+def write_csv_metadata_lines(
+    handle: TextIO,
+    *,
+    config: ProfileConfig,
+    battery_serial: str,
+    profile_path: Path,
+    started_at: datetime,
+) -> None:
+    for line in build_csv_metadata_lines(
+        config=config,
+        battery_serial=battery_serial,
+        profile_path=profile_path,
+        started_at=started_at,
+    ):
+        handle.write(f"{line}\n")
 
 
 def optional_float(value: object) -> float | None:
@@ -434,6 +568,182 @@ def validate_not_below(name: str, value: float | None, minimum: float | None) ->
         raise SystemExit(f"{name}={value} is below the allowed minimum of {minimum}.")
 
 
+def quantize_set_value(value: float | None, nominal: float | None) -> int | None:
+    if value is None or nominal in {None, 0.0}:
+        return None
+    normalized = min(max(value / nominal, 0.0), 1.02)
+    return round((normalized / 1.02) * EA_SET_VALUE_FULL_SCALE)
+
+
+def validate_not_above_set_value_limit(
+    name: str,
+    value: float | None,
+    maximum: float | None,
+    nominal: float | None,
+) -> None:
+    if value is None or maximum is None:
+        return
+    value_raw = quantize_set_value(value, nominal)
+    maximum_raw = quantize_set_value(maximum, nominal)
+    if value_raw is None or maximum_raw is None:
+        validate_not_above(name, value, maximum)
+        return
+    if value_raw > maximum_raw:
+        raise SystemExit(f"{name}={value} exceeds the allowed maximum of {maximum}.")
+
+
+def validate_not_below_set_value_limit(
+    name: str,
+    value: float | None,
+    minimum: float | None,
+    nominal: float | None,
+) -> None:
+    if value is None or minimum is None:
+        return
+    value_raw = quantize_set_value(value, nominal)
+    minimum_raw = quantize_set_value(minimum, nominal)
+    if value_raw is None or minimum_raw is None:
+        validate_not_below(name, value, minimum)
+        return
+    if value_raw < minimum_raw:
+        raise SystemExit(f"{name}={value} is below the allowed minimum of {minimum}.")
+
+
+def validate_stage_against_active_limits(
+    *,
+    name: str,
+    mode: str,
+    setpoint: float | None,
+    cutoff_voltage_v: float | None,
+    limits: AdjustmentLimits,
+) -> None:
+    validate_not_above_set_value_limit(
+        f"Stage {name!r} cutoff_voltage_v",
+        cutoff_voltage_v,
+        DEVICE_RATINGS.voltage_v,
+        DEVICE_RATINGS.voltage_v,
+    )
+
+    if mode == "cv":
+        validate_positive_or_none(f"Stage {name!r} voltage setpoint", setpoint)
+        validate_not_below_set_value_limit(
+            f"Stage {name!r} voltage setpoint",
+            setpoint,
+            limits.voltage_min_v,
+            DEVICE_RATINGS.voltage_v,
+        )
+        validate_not_above_set_value_limit(
+            f"Stage {name!r} voltage setpoint",
+            setpoint,
+            DEVICE_RATINGS.voltage_v,
+            DEVICE_RATINGS.voltage_v,
+        )
+        validate_not_above_set_value_limit(
+            f"Stage {name!r} voltage setpoint",
+            setpoint,
+            limits.voltage_max_v,
+            DEVICE_RATINGS.voltage_v,
+        )
+        return
+
+    if mode == "cc":
+        validate_positive_or_none(f"Stage {name!r} current setpoint", setpoint)
+        validate_not_below_set_value_limit(
+            f"Stage {name!r} cutoff_voltage_v",
+            cutoff_voltage_v,
+            limits.voltage_min_v,
+            DEVICE_RATINGS.voltage_v,
+        )
+        validate_not_below_set_value_limit(
+            f"Stage {name!r} current setpoint",
+            setpoint,
+            limits.current_min_a,
+            DEVICE_RATINGS.current_a,
+        )
+        validate_not_above_set_value_limit(
+            f"Stage {name!r} current setpoint",
+            setpoint,
+            DEVICE_RATINGS.current_a,
+            DEVICE_RATINGS.current_a,
+        )
+        validate_not_above_set_value_limit(
+            f"Stage {name!r} current setpoint",
+            setpoint,
+            limits.current_max_a,
+            DEVICE_RATINGS.current_a,
+        )
+        return
+
+    if mode == "cp":
+        validate_positive_or_none(f"Stage {name!r} power setpoint", setpoint)
+        validate_not_below_set_value_limit(
+            f"Stage {name!r} cutoff_voltage_v",
+            cutoff_voltage_v,
+            limits.voltage_min_v,
+            DEVICE_RATINGS.voltage_v,
+        )
+        validate_not_above_set_value_limit(
+            f"Stage {name!r} power setpoint",
+            setpoint,
+            DEVICE_RATINGS.power_w,
+            DEVICE_RATINGS.power_w,
+        )
+        validate_not_above_set_value_limit(
+            f"Stage {name!r} power setpoint",
+            setpoint,
+            limits.power_max_w,
+            DEVICE_RATINGS.power_w,
+        )
+        return
+
+    if mode == "cr":
+        validate_positive_or_none(f"Stage {name!r} resistance setpoint", setpoint)
+        validate_not_below_set_value_limit(
+            f"Stage {name!r} cutoff_voltage_v",
+            cutoff_voltage_v,
+            limits.voltage_min_v,
+            DEVICE_RATINGS.voltage_v,
+        )
+        validate_not_below_set_value_limit(
+            f"Stage {name!r} resistance setpoint",
+            setpoint,
+            DEVICE_RATINGS.resistance_ohm_min,
+            DEVICE_RATINGS.resistance_ohm_max,
+        )
+        validate_not_above_set_value_limit(
+            f"Stage {name!r} resistance setpoint",
+            setpoint,
+            DEVICE_RATINGS.resistance_ohm_max,
+            DEVICE_RATINGS.resistance_ohm_max,
+        )
+        validate_not_above_set_value_limit(
+            f"Stage {name!r} resistance setpoint",
+            setpoint,
+            limits.resistance_max_ohm,
+            DEVICE_RATINGS.resistance_ohm_max,
+        )
+
+
+def validate_profile_consistency_against_active_limits(
+    *,
+    protections: ProtectionSettings,
+    limits: AdjustmentLimits,
+    stages: list[ProfileStage],
+) -> None:
+    for stage in stages:
+        if stage.mode == "cv":
+            validate_not_above(f"Stage {stage.name!r} voltage setpoint", stage.setpoint, protections.ovp_v)
+
+        if stage.mode in {"cc", "cp", "cr"}:
+            validate_not_above_set_value_limit(
+                f"Stage {stage.name!r} cutoff_voltage_v",
+                stage.cutoff_voltage_v,
+                limits.voltage_max_v,
+                DEVICE_RATINGS.voltage_v,
+            )
+            validate_not_above(f"Stage {stage.name!r} cutoff_voltage_v", stage.cutoff_voltage_v, protections.ovp_v)
+
+
 def build_device(config: ProfileConfig):
     return build_device_connection(EAEL9080_60DT, config.connection)
 
@@ -490,6 +800,35 @@ def read_adjustment_limits(device) -> dict[str, float]:
         except Exception as exc:
             LOGGER.warning("Skipping unsupported limit read resistance_max_ohm: %s", exc)
     return limits
+
+
+def resolve_effective_protections(
+    configured: ProtectionSettings,
+    observed: dict[str, float],
+) -> ProtectionSettings:
+    return ProtectionSettings(
+        ovp_v=configured.ovp_v if configured.ovp_v is not None else observed.get("ovp_v"),
+        ocp_a=configured.ocp_a if configured.ocp_a is not None else observed.get("ocp_a"),
+        opp_w=configured.opp_w if configured.opp_w is not None else observed.get("opp_w"),
+    )
+
+
+def resolve_effective_limits(
+    configured: AdjustmentLimits,
+    observed: dict[str, float],
+) -> AdjustmentLimits:
+    return AdjustmentLimits(
+        voltage_min_v=configured.voltage_min_v if configured.voltage_min_v is not None else observed.get("voltage_min_v"),
+        voltage_max_v=configured.voltage_max_v if configured.voltage_max_v is not None else observed.get("voltage_max_v"),
+        current_min_a=configured.current_min_a if configured.current_min_a is not None else observed.get("current_min_a"),
+        current_max_a=configured.current_max_a if configured.current_max_a is not None else observed.get("current_max_a"),
+        power_max_w=configured.power_max_w if configured.power_max_w is not None else observed.get("power_max_w"),
+        resistance_max_ohm=(
+            configured.resistance_max_ohm
+            if configured.resistance_max_ohm is not None
+            else observed.get("resistance_max_ohm")
+        ),
+    )
 
 
 def log_device_connection(device) -> None:
@@ -629,32 +968,139 @@ def effective_stage_power_ceiling(limits: AdjustmentLimits) -> float:
     return limits.power_max_w if limits.power_max_w is not None else DEVICE_RATINGS.power_w
 
 
+def resolve_stage_setpoints(stage: ProfileStage, limits: AdjustmentLimits) -> StageSetpoints:
+    if stage.mode == "off":
+        return StageSetpoints()
+    if stage.mode == "cv":
+        return StageSetpoints(
+            voltage_v=float(stage.setpoint),
+            current_a=effective_stage_current_ceiling(limits),
+            power_w=effective_stage_power_ceiling(limits),
+        )
+    if stage.mode == "cc":
+        return StageSetpoints(
+            voltage_v=effective_stage_voltage_floor(stage, limits),
+            current_a=float(stage.setpoint),
+            power_w=effective_stage_power_ceiling(limits),
+        )
+    if stage.mode == "cp":
+        return StageSetpoints(
+            voltage_v=effective_stage_voltage_floor(stage, limits),
+            current_a=effective_stage_current_ceiling(limits),
+            power_w=float(stage.setpoint),
+        )
+    if stage.mode == "cr":
+        return StageSetpoints(
+            voltage_v=effective_stage_voltage_floor(stage, limits),
+            current_a=effective_stage_current_ceiling(limits),
+            power_w=effective_stage_power_ceiling(limits),
+            resistance_ohm=float(stage.setpoint),
+        )
+    raise ValueError(f"Unsupported stage mode: {stage.mode}")
+
+
+def ensure_below_active_threshold(
+    name: str,
+    value: float | None,
+    threshold: float | None,
+    threshold_name: str,
+) -> None:
+    if value is None or threshold is None:
+        return
+    if value >= threshold:
+        raise RuntimeError(
+            f"{name}={value} reaches or exceeds active {threshold_name} threshold {threshold}. "
+            f"Raise {threshold_name} or lower the relevant stage setpoint or limit."
+        )
+
+
+def validate_profile_against_active_device(
+    *,
+    measurement,
+    protections: ProtectionSettings,
+    limits: AdjustmentLimits,
+    stages: list[ProfileStage],
+) -> None:
+    if protections.ovp_v is not None and measurement.voltage_v >= protections.ovp_v:
+        raise RuntimeError(
+            f"Measured battery voltage {measurement.voltage_v:.3f} V is already at or above "
+            f"active OVP {protections.ovp_v:.3f} V. Raise OVP or lower the pack voltage first."
+        )
+
+    try:
+        validate_profile_consistency_against_active_limits(
+            protections=protections,
+            limits=limits,
+            stages=stages,
+        )
+    except SystemExit as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    for stage in stages:
+        try:
+            validate_stage_against_active_limits(
+                name=stage.name,
+                mode=stage.mode,
+                setpoint=stage.setpoint,
+                cutoff_voltage_v=stage.cutoff_voltage_v,
+                limits=limits,
+            )
+        except SystemExit as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        programmed = resolve_stage_setpoints(stage, limits)
+        if stage.mode == "cv":
+            ensure_below_active_threshold(
+                f"Stage {stage.name!r} voltage setpoint",
+                programmed.voltage_v,
+                protections.ovp_v,
+                "OVP",
+            )
+
+        current_label = "current setpoint" if stage.mode == "cc" else "current ceiling"
+        power_label = "power setpoint" if stage.mode == "cp" else "power ceiling"
+
+        ensure_below_active_threshold(
+            f"Stage {stage.name!r} {current_label}",
+            programmed.current_a,
+            protections.ocp_a,
+            "OCP",
+        )
+        ensure_below_active_threshold(
+            f"Stage {stage.name!r} {power_label}",
+            programmed.power_w,
+            protections.opp_w,
+            "OPP",
+        )
+
+
 def apply_stage(device, stage: ProfileStage, run_settings: RunSettings, limits: AdjustmentLimits) -> None:
     device.set_input_enabled(False)
+    programmed = resolve_stage_setpoints(stage, limits)
 
     if stage.mode == "cv":
-        device.set_current(effective_stage_current_ceiling(limits))
-        device.set_power(effective_stage_power_ceiling(limits))
-        device.set_voltage(float(stage.setpoint))
+        device.set_current(programmed.current_a)
+        device.set_power(programmed.power_w)
+        device.set_voltage(programmed.voltage_v)
         device.set_input_enabled(True)
         time.sleep(run_settings.enable_settle_s)
     elif stage.mode == "cc":
-        device.set_voltage(effective_stage_voltage_floor(stage, limits))
-        device.set_power(effective_stage_power_ceiling(limits))
-        device.set_current(float(stage.setpoint))
+        device.set_voltage(programmed.voltage_v)
+        device.set_power(programmed.power_w)
+        device.set_current(programmed.current_a)
         device.set_input_enabled(True)
         time.sleep(run_settings.enable_settle_s)
     elif stage.mode == "cp":
-        device.set_voltage(effective_stage_voltage_floor(stage, limits))
-        device.set_current(effective_stage_current_ceiling(limits))
-        device.set_power(float(stage.setpoint))
+        device.set_voltage(programmed.voltage_v)
+        device.set_current(programmed.current_a)
+        device.set_power(programmed.power_w)
         device.set_input_enabled(True)
         time.sleep(run_settings.enable_settle_s)
     elif stage.mode == "cr":
-        device.set_voltage(effective_stage_voltage_floor(stage, limits))
-        device.set_current(effective_stage_current_ceiling(limits))
-        device.set_power(effective_stage_power_ceiling(limits))
-        device.set_resistance(float(stage.setpoint))
+        device.set_voltage(programmed.voltage_v)
+        device.set_current(programmed.current_a)
+        device.set_power(programmed.power_w)
+        device.set_resistance(programmed.resistance_ohm)
         device.set_input_enabled(True)
         time.sleep(run_settings.enable_settle_s)
 
@@ -676,26 +1122,32 @@ def cleanup_device(device) -> None:
             LOGGER.warning("SCPI error queue: %s", errors)
 
 
-def run_profile(config: ProfileConfig, battery_serial: str) -> Path:
+def run_profile(config: ProfileConfig, battery_serial: str, profile_path: Path = DEFAULT_PROFILE_PATH) -> Path:
     log_path = build_log_path(config.run, battery_serial)
+    text_log_path = build_text_log_path(log_path)
+    started_at = datetime.now().astimezone()
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    configure_logging_handlers(text_log_path)
 
     device = build_device(config)
+    LOGGER.info("Loaded profile from %s", profile_path.resolve())
     LOGGER.info("Using %s", format_connection(config.connection))
     LOGGER.info("Battery serial: %s", battery_serial)
 
     with log_path.open("w", newline="", encoding="utf-8") as handle:
+        write_csv_metadata_lines(
+            handle,
+            config=config,
+            battery_serial=battery_serial,
+            profile_path=profile_path,
+            started_at=started_at,
+        )
         writer = csv.DictWriter(handle, fieldnames=CSV_FIELDS)
         writer.writeheader()
 
         with device:
             log_device_connection(device)
             preflight_measurement = device.read_measurements() if hasattr(device, "read_measurements") else device.measure_all()
-            if config.protections.ovp_v is not None and preflight_measurement.voltage_v >= config.protections.ovp_v:
-                raise RuntimeError(
-                    f"Measured battery voltage {preflight_measurement.voltage_v:.3f} V is already at or above "
-                    f"configured OVP {config.protections.ovp_v:.3f} V. Raise OVP or lower the pack voltage first."
-                )
 
             start_monotonic = time.monotonic()
             last_sample_monotonic: float | None = None
@@ -708,12 +1160,22 @@ def run_profile(config: ProfileConfig, battery_serial: str) -> Path:
                 time.sleep(config.run.remote_settle_s)
                 apply_adjustment_limits(device, config.limits)
                 apply_protection_settings(device, config.protections)
+                active_limits = resolve_effective_limits(config.limits, read_adjustment_limits(device))
+                active_protections = resolve_effective_protections(config.protections, read_protection_settings(device))
+                LOGGER.info("Active protections for profile: %s", active_protections)
+                LOGGER.info("Active limits for profile: %s", active_limits)
+                validate_profile_against_active_device(
+                    measurement=preflight_measurement,
+                    protections=active_protections,
+                    limits=active_limits,
+                    stages=config.stages,
+                )
 
                 sample_index = 0
 
                 for stage_index, stage in enumerate(config.stages, start=1):
                     LOGGER.info("Starting stage %d/%d: %s", stage_index, len(config.stages), stage)
-                    apply_stage(device, stage, config.run, config.limits)
+                    apply_stage(device, stage, config.run, active_limits)
                     stage_start_monotonic = time.monotonic()
                     stage_sample_index = 0
                     below_cutoff_samples = 0
@@ -751,7 +1213,7 @@ def run_profile(config: ProfileConfig, battery_serial: str) -> Path:
 
                         writer.writerow(
                             {
-                                "timestamp": timestamp_now(),
+                                "timestamp": f"{elapsed_s:.3f}",
                                 "battery_serial": battery_serial,
                                 "sample_index": sample_index,
                                 "stage_index": stage_index,
@@ -804,15 +1266,16 @@ def run_profile(config: ProfileConfig, battery_serial: str) -> Path:
         discharged_wh,
     )
     LOGGER.info("Wrote CSV log to %s", log_path)
+    LOGGER.info("Wrote text log to %s", text_log_path)
     return log_path
 
 
 def main() -> None:
     configure_logging()
-    profile = load_profile()
-    LOGGER.info("Loaded profile from %s", DEFAULT_PROFILE_PATH)
+    profile_path = DEFAULT_PROFILE_PATH
+    profile = load_profile(profile_path)
     battery_serial = prompt_battery_serial()
-    run_profile(profile, battery_serial)
+    run_profile(profile, battery_serial, profile_path)
 
 
 if __name__ == "__main__":

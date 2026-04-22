@@ -31,29 +31,31 @@ connection:
 
 run:
   log_directory: logging
-  sample_interval_s: 1.0
+  sample_interval_s: 0.1
   remote_settle_s: 0.3
   enable_settle_s: 0.5
   stage_settle_s: 0.3
 
+# These are device alarms. When reached, they switch off the DC input.
 protections:
-  ovp_v: 25.5
-  ocp_a: 60.0
-  opp_w: 1200.0
+  ovp_v: 25.2
+  ocp_a: 65
+  opp_w: 1300
 
+# Limits are setpoint bounds, e.g. it can switch from CC to CV when voltage_min_v is reached
 limits:
-  voltage_min_v: null
+  voltage_min_v: 10.0
   voltage_max_v: 25.2
   current_min_a: null
-  current_max_a: 60.0
-  power_max_w: 1200.0
+  current_max_a: null
+  power_max_w: 1200
   resistance_max_ohm: null
 
 stages:
   - name: Takeoff-peak
     mode: cc
     setpoint: 60.0
-    duration_s: 30.0
+    duration_s: 5.0
 
   - name: Takeoff
     mode: cc
