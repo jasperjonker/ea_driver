@@ -52,21 +52,20 @@ limits:
 stages:
   - name: Takeoff-peak
     mode: cc
-    setpoint: 50.0
-    duration_s: 60.0
+    setpoint: 60.0
+    duration_s: 30.0
 
   - name: Takeoff
     mode: cc
-    setpoint: 30.0
-    duration_s: 30.0
+    setpoint: 40.0
+    duration_s: 60.0
 
   - name: Cruise
     mode: cc
     setpoint: 6.0
-    duration_s: 300.0
+    duration_s: 1200.0
 
   - name: land_till_cutoff
     mode: cc
-    setpoint: 30.0
+    setpoint: 40.0
     cutoff_voltage_v: 15.0
-    cutoff_confirm_samples: 3
