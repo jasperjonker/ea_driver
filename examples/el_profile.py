@@ -29,7 +29,9 @@ from ea_driver.ea import EA_SET_VALUE_FULL_SCALE
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 LOGGER = logging.getLogger("ea_driver.examples.el_profile")
-DEFAULT_PROFILE_PATH = Path(__file__).with_suffix(".yaml")
+# PROFILE_FILENAME = "el_profile_grepow.yaml"
+PROFILE_FILENAME = "el_profile_6s.yaml"
+DEFAULT_PROFILE_PATH = Path(__file__).resolve().parent / PROFILE_FILENAME
 ALLOWED_TRANSPORTS = {"usb-modbus", "usb-scpi", "lan-scpi"}
 ALLOWED_STAGE_MODES = {"off", "cv", "cc", "cp", "cr"}
 DEVICE_RATINGS = EAEL9080_60DT.RATINGS

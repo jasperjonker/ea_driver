@@ -1,0 +1,73 @@
+# Edit this file, then run:
+#   uv run python examples/el_profile.py
+#
+# Stages are defined only here, not in the Python file.
+#
+# Supported stage modes:
+# - off: input disabled
+# - cv: constant voltage, `setpoint` in V
+# - cc: constant current, `setpoint` in A
+# - cp: constant power, `setpoint` in W
+# - cr: constant resistance, `setpoint` in Ohm
+#
+# A stage stops when either:
+# - `duration_s` is reached
+# - `cutoff_voltage_v` is reached for `cutoff_confirm_samples` samples
+# If a stage omits `cutoff_voltage_v`, it only stops on `duration_s`.
+#
+# `protections` configures device OVP/OCP/OPP thresholds.
+# `limits` configures the device "Limits" menu: U-Min, U-Max, I-Min, I-Max, P-Max, R-Max.
+# Set fields to `null` to leave them unchanged / unused.
+
+connection:
+  transport: usb-modbus
+  serial_port: /dev/ttyACM0
+  serial_glob: null
+  host: 192.168.0.42
+  lan_scpi_port: 5025
+  baudrate: 115200
+  unit_id: 0
+  timeout_s: 1.0
+
+run:
+  log_directory: logging
+  sample_interval_s: 0.1
+  remote_settle_s: 0.3
+  enable_settle_s: 0.5
+  stage_settle_s: 0.3
+
+# These are device alarms. When reached, they switch off the DC input.
+protections:
+  ovp_v: 25.2
+  ocp_a: 65
+  opp_w: 1300
+
+# Limits are setpoint bounds, e.g. it can switch from CC to CV when voltage_min_v is reached
+limits:
+  voltage_min_v: 10.0
+  voltage_max_v: 25.2
+  current_min_a: null
+  current_max_a: null
+  power_max_w: 1200
+  resistance_max_ohm: null
+
+stages:
+  - name: Takeoff-peak
+    mode: cp
+    setpoint: 1200
+    duration_s: 10.0
+
+  - name: Takeoff
+    mode: cp
+    setpoint: 800
+    duration_s: 60.0
+
+  - name: Cruise
+    mode: cp
+    setpoint: 120
+    duration_s: 1200.0
+
+  - name: land_till_cutoff
+    mode: cp
+    setpoint: 800
+    cutoff_voltage_v: 15.0

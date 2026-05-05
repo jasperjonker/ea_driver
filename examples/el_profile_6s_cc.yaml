@@ -55,7 +55,7 @@ stages:
   - name: Takeoff-peak
     mode: cc
     setpoint: 60.0
-    duration_s: 5.0
+    duration_s: 10.0
 
   - name: Takeoff
     mode: cc
